@@ -33,6 +33,9 @@ Usage:
     python theWhistlignWorldCup.py --calibrate          # print your whistle pitch
     python theWhistlignWorldCup.py --role ball --no-robot --skip-start   # test without hardware
     python theWhistlignWorldCup.py --role ball --practice   # offline: no MQTT, starts immediately
+    python theWhistlignWorldCup.py --role ball --practice --no-robot   # ...and watch a simulated robot
+    python theWhistlignWorldCup.py --role goalie --practice --no-robot # goalie vs a CPU ball
+    python theWhistlignWorldCup.py --test-sensor        # live light-sensor readings
 
 Press Ctrl+C to quit; the robot always stops and disconnects.
 """
@@ -187,13 +190,173 @@ class WhistleCommands:
 
 
 # ----------------------------------------------------------------------------
+# Simulator (--no-robot)
+# ----------------------------------------------------------------------------
+
+class Simulator:
+    """Top-down window where a virtual robot drives from the same tank commands.
+
+    A computer opponent plays the other role: as the ball you dodge a CPU goalie,
+    as the goalie you stop a CPU ball. The ball's forward light sensor is
+    simulated as a cone in front of it (drawn dashed).
+    """
+
+    W, H = 800, 500
+    PX_PER_PCT = 3.0     # px/s per % of wheel speed (80% -> 240 px/s)
+    TRACK_PX = 80        # distance between the wheels; smaller turns faster
+    TRAIL_MAX = 600      # trail segments kept on screen
+    GOAL_HALF_H = 80     # goal mouth is H/2 +- this
+    SENSOR_RANGE_PX = 80                 # ball's light sensor sees this far (centre to centre)
+    SENSOR_HALF_ANGLE = np.radians(30)   # ...within this angle of straight ahead
+    TOUCH_PX = 35        # robots this close always count as a catch
+    CPU_GOALIE_SPEED = 100   # px/s the CPU goalie slides across its goal
+    CPU_BALL_SPEED = 55      # px/s the CPU ball advances toward the goal
+
+    def __init__(self, role, inbox):
+        import tkinter as tk
+        self.role, self.inbox = role, inbox
+        self.root = tk.Tk()
+        self.root.title(f"Whistling World Cup - simulator ({role} practice)")
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.canvas = tk.Canvas(self.root, width=self.W, height=self.H, bg="#2e7d32", highlightthickness=0)
+        self.canvas.pack()
+        w, h, g = self.W, self.H, self.GOAL_HALF_H
+        self.canvas.create_line(w / 2, 0, w / 2, h, fill="white", width=2)
+        self.canvas.create_oval(w / 2 - 60, h / 2 - 60, w / 2 + 60, h / 2 + 60, outline="white", width=2)
+        self.canvas.create_rectangle(w - 25, h / 2 - g, w, h / 2 + g, outline="white", width=3)
+        self.canvas.create_text(w - 40, h / 2, text="GOAL", fill="white", angle=90, font=("Arial", 14, "bold"))
+        self.cone = self.canvas.create_polygon(0, 0, 0, 0, 0, 0, fill="", outline="white", dash=(3, 3))
+        self.opponent = self.canvas.create_polygon(0, 0, 0, 0, 0, 0, fill="#42a5f5", outline="black", width=2)
+        self.body = self.canvas.create_polygon(0, 0, 0, 0, 0, 0, fill="#fdd835", outline="black", width=2)
+        self.status = self.canvas.create_text(10, 10, anchor="nw", fill="white", font=("Consolas", 14))
+        self.banner = self.canvas.create_text(w / 2, 40, fill="white", font=("Arial", 22, "bold"))
+        self.canvas.create_text(10, h - 10, anchor="sw", fill="#c8e6c9", font=("Arial", 10),
+                                text="yellow = you   blue = CPU " + ("goalie" if role == "ball" else "ball"))
+        self.trail = []
+        if role == "ball":   # you start on the left, CPU goalie guards the goal
+            self.x, self.y, self.heading = 80.0, h / 2, 0.0
+            self.opp_x, self.opp_y, self.opp_heading = w - 70.0, h / 2, np.pi
+        else:                # you guard the goal, CPU ball starts on the left
+            self.x, self.y, self.heading = w - 90.0, h / 2, np.pi
+            self.opp_x, self.opp_y, self.opp_heading = 60.0, h / 2, 0.0
+        self.left = self.right = 0
+        self.start = self.last = time.monotonic()
+        self.banner_until = 0.0
+        self.finished = False
+        self.closed = False
+        self.update("")
+
+    def _on_close(self):
+        self.closed = True
+
+    @staticmethod
+    def _triangle(x, y, heading):
+        c, s = np.cos(heading), np.sin(heading)
+        points = []
+        for fwd, side in ((24, 0), (-16, 15), (-16, -15)):
+            points += [x + fwd * c - side * s, y - fwd * s - side * c]
+        return points
+
+    def _sees(self, bx, by, bheading, tx, ty):
+        """Would a forward light sensor at (bx, by) facing bheading detect a robot at (tx, ty)?"""
+        dx, dy = tx - bx, by - ty   # flip y so angles are counter-clockwise
+        dist = np.hypot(dx, dy)
+        if dist <= self.TOUCH_PX:
+            return True
+        off_axis = abs((np.arctan2(dy, dx) - bheading + np.pi) % (2 * np.pi) - np.pi)
+        return dist <= self.SENSOR_RANGE_PX and off_axis <= self.SENSOR_HALF_ANGLE
+
+    def _in_mouth(self, x, y, depth):
+        return x >= self.W - depth and abs(y - self.H / 2) <= self.GOAL_HALF_H
+
+    def goalie_is_close(self):
+        """Ball practice: the simulated light sensor sees the CPU goalie."""
+        return self._sees(self.x, self.y, self.heading, self.opp_x, self.opp_y)
+
+    def in_goal(self):
+        """Ball practice: close enough to the goal for a GOAL whistle to count."""
+        return self._in_mouth(self.x, self.y, depth=90)
+
+    def flash(self, text, seconds=1.5):
+        self.canvas.itemconfig(self.banner, text=text)
+        self.banner_until = time.monotonic() + seconds
+
+    def _move_opponent(self, now, dt):
+        if self.role == "ball":
+            # CPU goalie slides along its goal line to stay between you and the goal
+            target = np.clip(self.y, self.H / 2 - self.GOAL_HALF_H, self.H / 2 + self.GOAL_HALF_H)
+            step = np.clip(target - self.opp_y, -self.CPU_GOALIE_SPEED * dt, self.CPU_GOALIE_SPEED * dt)
+            self.opp_y += float(step)
+            return
+        # CPU ball weaves toward the goal, the weave narrowing as it gets close
+        old_x, old_y = self.opp_x, self.opp_y
+        self.opp_x += self.CPU_BALL_SPEED * dt
+        weave = 130 * max(0.0, (self.W - 60 - self.opp_x) / self.W)
+        self.opp_y = self.H / 2 + weave * np.sin(0.8 * (now - self.start))
+        if self.opp_x != old_x:
+            self.opp_heading = float(np.arctan2(old_y - self.opp_y, self.opp_x - old_x))
+        # The CPU ball reports the result the way a real one would over MQTT
+        if self._sees(self.opp_x, self.opp_y, self.opp_heading, self.x, self.y):
+            self.finished = True
+            print(f"[sim] CPU ball's light sensor saw you -> {MSG_BALL_CAUGHT!r}")
+            self.inbox.put(MSG_BALL_CAUGHT)
+        elif self._in_mouth(self.opp_x, self.opp_y, depth=30):
+            self.finished = True
+            print(f"[sim] CPU ball reached the goal -> {MSG_GOAL_SCORED!r}")
+            self.inbox.put(MSG_GOAL_SCORED)
+
+    def update(self, status):
+        """Advance the physics to now and redraw. Closing the window quits the game."""
+        if self.closed:
+            raise KeyboardInterrupt
+        now = time.monotonic()
+        dt, self.last = min(now - self.last, 0.2), now
+
+        # Differential drive: average wheel speed moves, the difference turns
+        v = (self.left + self.right) / 2 * self.PX_PER_PCT
+        self.heading += (self.right - self.left) * self.PX_PER_PCT / self.TRACK_PX * dt
+        nx = float(np.clip(self.x + v * np.cos(self.heading) * dt, 15, self.W - 15))
+        ny = float(np.clip(self.y - v * np.sin(self.heading) * dt, 15, self.H - 15))
+        if (nx, ny) != (self.x, self.y):
+            self.trail.append(self.canvas.create_line(self.x, self.y, nx, ny, fill="#a5d6a7", width=2))
+            if len(self.trail) > self.TRAIL_MAX:
+                self.canvas.delete(self.trail.pop(0))
+        self.x, self.y = nx, ny
+        if not self.finished:
+            self._move_opponent(now, dt)
+
+        # Draw both robots, plus the light-sensor cone on whichever one is the ball
+        self.canvas.coords(self.body, *self._triangle(self.x, self.y, self.heading))
+        self.canvas.coords(self.opponent, *self._triangle(self.opp_x, self.opp_y, self.opp_heading))
+        bx, by, bh = ((self.x, self.y, self.heading) if self.role == "ball"
+                      else (self.opp_x, self.opp_y, self.opp_heading))
+        r, a = self.SENSOR_RANGE_PX, self.SENSOR_HALF_ANGLE
+        self.canvas.coords(self.cone, bx, by,
+                           bx + r * np.cos(bh + a), by - r * np.sin(bh + a),
+                           bx + r * np.cos(bh - a), by - r * np.sin(bh - a))
+        for item in (self.cone, self.opponent, self.body, self.status, self.banner):
+            self.canvas.tag_raise(item)
+        self.canvas.itemconfig(self.status, text=status)
+        if self.banner_until and now > self.banner_until:
+            self.canvas.itemconfig(self.banner, text="")
+            self.banner_until = 0.0
+        self.root.update()
+
+    def close(self):
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+
+
+# ----------------------------------------------------------------------------
 # Robot
 # ----------------------------------------------------------------------------
 
 class Robot:
-    """Double Motor + Color Sensor, or a print-only stand-in with --no-robot."""
+    """Double Motor + Color Sensor, or an on-screen simulator with --no-robot."""
 
-    def __init__(self, use_hardware, need_sensor):
+    def __init__(self, use_hardware, need_sensor, need_motor=True, role="ball", inbox=None):
         self.use_hardware = use_hardware
         self.motor = None
         self.sensor = None
@@ -201,17 +364,20 @@ class Robot:
         self.last_send_time = 0.0
         self.baseline = None
         self.over_count = 0
+        self.sim = None
         if not use_hardware:
-            print("[no-robot] Motor commands will only be printed.")
+            print("[no-robot] Driving a simulated robot in a window (close it or Ctrl+C to quit).")
+            self.sim = Simulator(role, inbox if inbox is not None else queue.Queue())
             return
 
-        print(f"Connecting to Double Motor (card serial {CARD_SERIAL})...")
-        self.motor = le.DoubleMotor()
-        self.motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL)
-        if not self.motor.connected:
-            raise RuntimeError("Could not connect to the Double Motor. Is it on and broadcasting?")
-        self.motor.movement_set_end_state(le.MOTOR_END_STATE_BRAKE)
-        print("Double Motor connected.")
+        if need_motor:
+            print(f"Connecting to Double Motor (card serial {CARD_SERIAL})...")
+            self.motor = le.DoubleMotor()
+            self.motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL)
+            if not self.motor.connected:
+                raise RuntimeError("Could not connect to the Double Motor. Is it on and broadcasting?")
+            self.motor.movement_set_end_state(le.MOTOR_END_STATE_BRAKE)
+            print("Double Motor connected.")
 
         if need_sensor:
             print(f"Connecting to Color Sensor (card serial {CARD_SERIAL})...")
@@ -223,21 +389,36 @@ class Robot:
 
     def drive(self, left, right, force=False):
         left, right = int(np.clip(left, -100, 100)), int(np.clip(right, -100, 100))
+        if self.sim is not None:
+            self.sim.left, self.sim.right = left, right
+            return
         now = time.monotonic()
         if not force and ((left, right) == self.last_sent or now - self.last_send_time < SEND_INTERVAL_S):
             return
         self.last_sent, self.last_send_time = (left, right), now
-        if self.motor is None:
-            print(f"[no-robot] tank L={left:+d} R={right:+d}")
-        else:
-            self.motor.movement_move_tank(left, right, blocking=False)
+        self.motor.movement_move_tank(left, right, blocking=False)
 
     def stop(self):
         self.last_sent = (0, 0)
         if self.motor is not None:
             self.motor.movement_stop(blocking=True)
-        else:
-            print("[no-robot] STOP")
+        if self.sim is not None:
+            self.sim.left = self.sim.right = 0
+
+    def update(self, status=""):
+        """Redraw the simulator (no-op with real hardware)."""
+        if self.sim is not None:
+            self.sim.update(status)
+
+    def flash(self, text):
+        """Big message in the simulator window (no-op with real hardware)."""
+        if self.sim is not None:
+            self.sim.flash(text)
+            self.sim.update("")
+
+    def in_goal(self):
+        """Only the simulator can tell; on the real field the GOAL whistle is on your honour."""
+        return self.sim is None or self.sim.in_goal()
 
     def reflection(self):
         if self.sensor is None:
@@ -263,6 +444,8 @@ class Robot:
         print(f"Light baseline reflection = {self.baseline:.1f}")
 
     def goalie_is_close(self):
+        if self.sim is not None:
+            return self.sim.goalie_is_close()
         value = self.reflection()
         if value is None or self.baseline is None:
             return False
@@ -273,6 +456,8 @@ class Robot:
         return self.over_count >= CATCH_SAMPLES
 
     def close(self):
+        if self.sim is not None:
+            self.sim.close()
         for device in (self.motor, self.sensor):
             if device is None:
                 continue
@@ -376,6 +561,26 @@ def calibrate(pa):
             print(f"WHISTLE_HIGH_HZ = {high:.0f}")
 
 
+def test_sensor():
+    """Live Color Sensor readout, to check it can see the goalie (needs the sensor, not the motor)."""
+    robot = Robot(use_hardware=True, need_sensor=True, need_motor=False)
+    try:
+        robot.calibrate_light()
+        print(f"Move the goalie (or your hand) in front of the sensor. A catch is a change of "
+              f"{CATCH_DELTA}+ for {CATCH_SAMPLES} readings in a row. Ctrl+C to quit.")
+        while True:
+            value = robot.reflection()
+            caught = robot.goalie_is_close()
+            if value is not None:
+                change = value - robot.baseline
+                bar = "#" * int(min(abs(change), 40))
+                print(f"reflection {value:5.1f}  change {change:+6.1f}  |{bar:<40s}|"
+                      f"{'  CAUGHT!' if caught else ''}")
+            time.sleep(0.1)
+    finally:
+        robot.close()
+
+
 def wait_for_start(inbox):
     print(f"Waiting for '{MSG_START}' on {MQTT_TOPIC}...")
     while True:
@@ -401,15 +606,20 @@ def play(role, robot, client, inbox, pa):
             while not inbox.empty():
                 message = inbox.get_nowait()
                 if role == "goalie" and message == MSG_BALL_CAUGHT:
+                    robot.stop()
+                    robot.flash("You caught the ball!")
                     print("We caught the ball! Victory!")
                     return VICTORY_SONG
                 if role == "goalie" and message == MSG_GOAL_SCORED:
+                    robot.stop()
+                    robot.flash("The ball scored...")
                     print("The ball scored. Defeat...")
                     return DEATH_SONG
 
             # --- Ball: did the goalie get close to our light sensor? ---
             if role == "ball" and robot.goalie_is_close():
                 robot.stop()
+                robot.flash("Caught by the goalie!")
                 print("Caught by the goalie!")
                 publish(client, MSG_BALL_CAUGHT)
                 return DEATH_SONG
@@ -418,8 +628,14 @@ def play(role, robot, client, inbox, pa):
             freq, _ = detector.pitch(read_chunk(mic))
             command, goal_claimed = commands.update(band_for(freq))
 
+            if goal_claimed and role == "ball" and not robot.in_goal():
+                print("Not in the goal yet - drive into the box first!")
+                robot.flash("Not in the goal yet!")
+                commands = WhistleCommands()   # make them hold the GOAL whistle again
+                goal_claimed = False
             if goal_claimed and role == "ball":
                 robot.stop()
+                robot.flash("GOOOAL!")
                 print("GOOOAL!")
                 publish(client, MSG_GOAL_SCORED)
                 return VICTORY_SONG
@@ -440,6 +656,8 @@ def play(role, robot, client, inbox, pa):
             # "goal" (not yet held long enough) and silence: keep speed, go straight
 
             robot.drive(speed + steer, speed - steer)
+            pitch = "  -  " if freq is None else f"{freq:5.0f}"
+            robot.update(f"{command or 'silence':8s} speed {speed:3.0f}%   {pitch} Hz")
     finally:
         mic.close()
 
@@ -449,11 +667,20 @@ def main():
     parser.add_argument("--role", choices=["ball", "goalie"], help="your assigned role")
     parser.add_argument("--broker", default=MQTT_BROKER, help="MQTT broker host")
     parser.add_argument("--calibrate", action="store_true", help="just print whistle pitch")
-    parser.add_argument("--no-robot", action="store_true", help="print motor commands instead of using BLE")
+    parser.add_argument("--no-robot", action="store_true", help="drive an on-screen simulated robot instead of using BLE")
     parser.add_argument("--skip-start", action="store_true", help="don't wait for the MQTT 'start' message")
     parser.add_argument("--practice", action="store_true",
                         help=f"offline practice: no MQTT ({MQTT_TOPIC}), starts immediately")
+    parser.add_argument("--test-sensor", action="store_true",
+                        help="live Color Sensor readings, to check goalie detection")
     args = parser.parse_args()
+
+    if args.test_sensor:
+        try:
+            test_sensor()
+        except KeyboardInterrupt:
+            pass
+        return
 
     pa = pyaudio.PyAudio()
     if args.calibrate:
@@ -465,13 +692,24 @@ def main():
             pa.terminate()
         return
     while args.role is None:  # e.g. launched from the IDE's Run button with no arguments
-        answer = input("Role? [b]all / [g]oalie / [p]ractice (ball, offline) / [c]alibrate: ").strip().lower()
+        answer = input("Role? [b]all / [g]oalie / [p]ractice (offline) / [s]ensor test / [c]alibrate: ").strip().lower()
         if answer in ("b", "ball"):
             args.role = "ball"
         elif answer in ("g", "goalie"):
             args.role = "goalie"
         elif answer in ("p", "practice"):
-            args.role, args.practice = "ball", True
+            args.practice = True
+            practice_role = input("Practice as [b]all or [g]oalie? ").strip().lower()
+            args.role = "goalie" if practice_role in ("g", "goalie") else "ball"
+            robot_here = input("Is the robot connected? [y/N]: ").strip().lower()
+            args.no_robot = robot_here not in ("y", "yes")
+        elif answer in ("s", "sensor"):
+            pa.terminate()
+            try:
+                test_sensor()
+            except KeyboardInterrupt:
+                pass
+            return
         elif answer in ("c", "calibrate"):
             try:
                 calibrate(pa)
@@ -484,9 +722,10 @@ def main():
     robot = None
     client = None
     try:
-        robot = Robot(use_hardware=not args.no_robot, need_sensor=args.role == "ball")
-        robot.calibrate_light()
         inbox = queue.Queue()
+        robot = Robot(use_hardware=not args.no_robot, need_sensor=args.role == "ball",
+                      role=args.role, inbox=inbox)
+        robot.calibrate_light()
         if args.practice:
             print(f"[practice] Not connecting to MQTT; nothing is sent on {MQTT_TOPIC}. Ctrl+C to quit.")
         else:
