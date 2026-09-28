@@ -119,8 +119,8 @@ MOTOR_WHISTLE_HIGH_HZ = 1700
 # Their range, lowest to highest: full reverse ... stop ... full forward. The
 # further from the middle, the faster; the middle STOP band is this share of it.
 MOTOR_STOP_SHARE = 0.2
-MOTOR_MAX_SPEED = 100        # percent at either end of the range
-MOTOR_MIN_SPEED = 20         # percent just outside the STOP band (slower barely turns)
+MOTOR_MAX_SPEED = 30         # percent at either end of the range
+MOTOR_MIN_SPEED = 8          # percent just outside the STOP band
 MOTOR_SILENCE_S = 0.25       # stop the Single Motor after this long without a whistle
 MOTOR_SEND_INTERVAL_S = 0.1  # the motor computer publishes its speed ~10x a second
 MOTOR_TIMEOUT_S = 1.0        # robot stops the Single Motor if messages stop this long
