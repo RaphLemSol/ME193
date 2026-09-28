@@ -12,7 +12,7 @@ whistle, and the pitch band picks a driving command:
     HIGH                speed up (keep whistling to keep accelerating)
     VERY HIGH, held     "GOAL!" special command (ball only)
 
-Keep whistling to keep moving: when the whistle stops (for longer than
+Keep whistling to keep moving: when the whistle stops (immediately, or after
 SILENCE_STOP_S) the Double Motor stops. If you whistle a turn while stopped,
 the robot spins in place so you can aim. Background noise is measured for a
 second at startup and filtered out.
@@ -117,7 +117,7 @@ GOAL_GAP_S = 0.3             # a GOAL hold survives dropouts shorter than this
 # --- Driving ---
 MAX_SPEED = 80               # percent
 SPEED_STEP = 4               # speed added per "faster" frame (~46 ms)
-SILENCE_STOP_S = 0.35        # stop the Double Motor once no whistle is heard for this long
+SILENCE_STOP_S = 0.0         # stop the Double Motor this long after the whistle ends (0 = immediately)
 TURN_DIFF = 30               # speed difference between wheels while turning
 SEND_INTERVAL_S = 1 / 15     # throttle BLE commands to ~15 Hz
 
@@ -677,7 +677,8 @@ class Robot:
             self.sim.left, self.sim.right = left, right
             return
         now = time.monotonic()
-        if not force and ((left, right) == self.last_sent or now - self.last_send_time < SEND_INTERVAL_S):
+        # force skips the rate limit (for stops), but an unchanged command is never resent
+        if (left, right) == self.last_sent or (not force and now - self.last_send_time < SEND_INTERVAL_S):
             return
         self.last_sent, self.last_send_time = (left, right), now
         self.motor.movement_move_tank(left, right, blocking=False)
@@ -1082,11 +1083,13 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
             elif command == "right":
                 steer = TURN_DIFF
             # "goal" (not yet held long enough): keep speed, go straight.
-            # No whistle for SILENCE_STOP_S: stop, until you whistle again.
-            if freq is None and now - last_heard > SILENCE_STOP_S:
+            # No whistle (for longer than SILENCE_STOP_S): stop, until you whistle again.
+            # The stop skips the BLE throttle so the motors get it right away.
+            silent = freq is None and now - last_heard >= SILENCE_STOP_S
+            if silent:
                 speed = 0.0
 
-            robot.drive(speed + steer, speed - steer)
+            robot.drive(speed + steer, speed - steer, force=silent)
             single = ""
             if motor_link is not None:
                 robot.run_single_motor(motor_link.current_speed())
