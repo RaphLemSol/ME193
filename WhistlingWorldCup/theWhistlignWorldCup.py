@@ -27,6 +27,12 @@ Game flow (both roles wait for "start" on MQTT topic ME193/Rogers):
 
 Agree on MSG_BALL_CAUGHT / MSG_GOAL_SCORED with your opponent before the match.
 
+Two whistlers, one robot: a second computer runs --role motor and whistles a
+Single Motor on the same robot (low = reverse, middle = stop, high = forward,
+further from the middle = faster), in its own calibrated range. It publishes
+the speed on MOTOR_TOPIC; the robot computer, started with --single-motor,
+drives the Single Motor from it and stops it if the messages stop.
+
 Usage:
     python theWhistlignWorldCup.py --role ball
     python theWhistlignWorldCup.py --role goalie
@@ -37,6 +43,8 @@ Usage:
     python theWhistlignWorldCup.py --role goalie --practice --no-robot # goalie vs a CPU ball
     python theWhistlignWorldCup.py --test-sensor        # live light-sensor readings
     python theWhistlignWorldCup.py --role ball --no-spectrogram   # no live spectrogram window
+    python theWhistlignWorldCup.py --role ball --single-motor     # robot computer, + Single Motor
+    python theWhistlignWorldCup.py --role motor --low 700 --high 1900   # 2nd computer whistles it
 
 Press Ctrl+C to quit; the robot always stops and disconnects.
 """
@@ -100,6 +108,22 @@ SPEED_STEP = 4               # speed added per "faster" frame (~46 ms)
 TURN_DIFF = 30               # speed difference between wheels while turning
 SEND_INTERVAL_S = 1 / 15     # throttle BLE commands to ~15 Hz
 
+# --- Single Motor, whistled from a second computer over MQTT (--role motor) ---
+# The second whistler's own range: they run --calibrate on their computer and
+# paste the MOTOR_ values it prints here (or pass --low / --high).
+MOTOR_WHISTLE_LOW_HZ = 600
+MOTOR_WHISTLE_HIGH_HZ = 1700
+# Their range, lowest to highest: full reverse ... stop ... full forward. The
+# further from the middle, the faster; the middle STOP band is this share of it.
+MOTOR_STOP_SHARE = 0.2
+MOTOR_MAX_SPEED = 100        # percent at either end of the range
+MOTOR_MIN_SPEED = 20         # percent just outside the STOP band (slower barely turns)
+MOTOR_SILENCE_S = 0.25       # stop the Single Motor after this long without a whistle
+MOTOR_SEND_INTERVAL_S = 0.1  # the motor computer publishes its speed ~10x a second
+MOTOR_TIMEOUT_S = 1.0        # robot stops the Single Motor if messages stop this long
+# Our robot only (the opponent listens on MQTT_TOPIC itself, not below it)
+MOTOR_TOPIC = f"{MQTT_TOPIC}/{CARD_SERIAL}/single_motor"
+
 # --- Light (Color) sensor catch detection ---
 BASELINE_SAMPLES = 20        # readings averaged at startup as "nothing nearby"
 CATCH_DELTA = 15             # reflection change (0-100) that means the goalie is close
@@ -151,11 +175,11 @@ class PitchDetector:
         return (i + offset) * self.hz_per_bin, rms
 
 
-def band_for(freq):
+def band_for(freq, bands=BANDS):
     if freq is None:
         return None
-    command = BANDS[0][1]
-    for lower, name in BANDS:
+    command = bands[0][1]
+    for lower, name in bands:
         if freq >= lower:
             command = name
     return command
@@ -190,6 +214,25 @@ class WhistleCommands:
         return stable, goal_claimed
 
 
+def motor_bands(low_hz, high_hz):
+    """(lower bound Hz, name) bands for the Single Motor whistler, like BANDS."""
+    mid, half_stop = (low_hz + high_hz) / 2, MOTOR_STOP_SHARE * (high_hz - low_hz) / 2
+    return [(0, "reverse"), (mid - half_stop, "stop"), (mid + half_stop, "forward")]
+
+
+def motor_speed_for(freq, low_hz, high_hz):
+    """Single Motor speed (-100..100) for a whistle: low = reverse, middle = stop, high = forward."""
+    if freq is None:
+        return 0
+    x = float(np.clip((freq - low_hz) / (high_hz - low_hz), 0, 1)) - 0.5   # -0.5..0.5
+    half_stop = MOTOR_STOP_SHARE / 2
+    if abs(x) <= half_stop:
+        return 0
+    how_far = (abs(x) - half_stop) / (0.5 - half_stop)                      # 0..1 past the STOP band
+    speed = MOTOR_MIN_SPEED + how_far * (MOTOR_MAX_SPEED - MOTOR_MIN_SPEED)
+    return int(round(np.sign(x) * speed))
+
+
 NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
 
 
@@ -206,7 +249,8 @@ def note_for(freq):
 # ----------------------------------------------------------------------------
 
 COMMAND_COLORS = {"stop": "#ef5350", "left": "#42a5f5", "right": "#ab47bc",
-                  "faster": "#66bb6a", "goal": "#ffca28"}
+                  "faster": "#66bb6a", "goal": "#ffca28",
+                  "reverse": "#ffa726", "forward": "#66bb6a"}   # single motor bands
 
 
 class Spectrogram:
@@ -219,17 +263,19 @@ class Spectrogram:
     DB_RANGE = 60             # dB from the loudest recent bin down to black
     MIN_TOP_DB = 20           # keeps silence dark instead of amplifying noise
 
-    def __init__(self, master=None):
+    def __init__(self, master=None, low_hz=WHISTLE_LOW_HZ, high_hz=WHISTLE_HIGH_HZ, bands=BANDS,
+                 title="live spectrogram"):
         import tkinter as tk
         self.owns_root = master is None
         self.win = tk.Tk() if self.owns_root else tk.Toplevel(master)
-        self.win.title("Whistling World Cup - live spectrogram")
+        self.win.title(f"Whistling World Cup - {title}")
+        self.bands = bands
         self.win.protocol("WM_DELETE_WINDOW", self._on_close)
         self.closed = False
         self.tk = tk
 
-        self.lo_hz = max(0, WHISTLE_LOW_HZ - 300)
-        self.hi_hz = WHISTLE_HIGH_HZ + 500
+        self.lo_hz = max(0, int(low_hz) - 300)
+        self.hi_hz = int(high_hz) + 500
         self.row_hz = np.linspace(self.hi_hz, self.lo_hz, self.IMG_H)   # top row = highest pitch
         self.bin_hz = np.fft.rfftfreq(CHUNK, 1 / SAMPLE_RATE)
         self.window = np.hanning(CHUNK).astype(np.float32)
@@ -260,8 +306,8 @@ class Spectrogram:
         # Command bands: dashed boundaries across the image, coloured strips on the right
         self.strips = {}
         x0, x1 = self.LEFT + self.IMG_W + 5, self.LEFT + self.IMG_W + self.RIGHT - 5
-        for i, (lower, name) in enumerate(BANDS):
-            upper = BANDS[i + 1][0] if i + 1 < len(BANDS) else self.hi_hz
+        for i, (lower, name) in enumerate(bands):
+            upper = bands[i + 1][0] if i + 1 < len(bands) else self.hi_hz
             y_top, y_bot = self._y(upper), self._y(max(lower, self.lo_hz))
             color = COMMAND_COLORS.get(name, "#bbb")
             self.strips[name] = self.canvas.create_rectangle(x0, y_top, x1, y_bot, fill="#1e1e1e",
@@ -319,7 +365,7 @@ class Spectrogram:
             self.canvas.itemconfig(self.marker, state="hidden")
         else:
             self.canvas.itemconfig(self.pitch_text, text=f"{freq:5.0f} Hz")
-            self.canvas.itemconfig(self.note_text, text=f"{note_for(freq)}  -> {band_for(freq)}")
+            self.canvas.itemconfig(self.note_text, text=f"{note_for(freq)}  -> {band_for(freq, self.bands)}")
             y = min(max(self._y(freq), self.TOP), self.TOP + self.IMG_H)
             x = self.LEFT + self.IMG_W
             self.canvas.coords(self.marker, x, y, x + 10, y - 7, x + 10, y + 7)
@@ -513,12 +559,17 @@ class Simulator:
 # ----------------------------------------------------------------------------
 
 class Robot:
-    """Double Motor + Color Sensor, or an on-screen simulator with --no-robot."""
+    """Double Motor + Color Sensor (+ optional Single Motor), or an on-screen simulator with --no-robot."""
 
-    def __init__(self, use_hardware, need_sensor, need_motor=True, role="ball", inbox=None):
+    def __init__(self, use_hardware, need_sensor, need_motor=True, role="ball", inbox=None,
+                 need_single_motor=False):
         self.use_hardware = use_hardware
         self.motor = None
         self.sensor = None
+        self.single_motor = None
+        self.single_speed = 0
+        self.single_last_sent = None
+        self.single_send_time = 0.0
         self.last_sent = None
         self.last_send_time = 0.0
         self.baseline = None
@@ -546,6 +597,30 @@ class Robot:
                 raise RuntimeError("Could not connect to the Color Sensor. Is it on and broadcasting?")
             print("Color Sensor connected.")
 
+        if need_single_motor:
+            print(f"Connecting to Single Motor (card serial {CARD_SERIAL})...")
+            self.single_motor = le.SingleMotor()
+            self.single_motor.connect(card_color=CARD_COLOR, card_serial=CARD_SERIAL)
+            if not self.single_motor.connected:
+                raise RuntimeError("Could not connect to the Single Motor. Is it on and broadcasting?")
+            self.single_motor.motor_set_end_state(le.MOTOR_END_STATE_BRAKE)
+            print("Single Motor connected.")
+
+    def run_single_motor(self, speed):
+        """Single Motor speed -100..100 (negative = counter-clockwise); 0 stops it."""
+        speed = int(np.clip(speed, -100, 100))
+        self.single_speed = speed
+        if self.single_motor is None:
+            return   # simulator: the speed is only shown on screen
+        now = time.monotonic()
+        if speed == self.single_last_sent or now - self.single_send_time < SEND_INTERVAL_S:
+            return
+        self.single_last_sent, self.single_send_time = speed, now
+        if speed == 0:
+            self.single_motor.motor_stop(blocking=False)
+        else:
+            self.single_motor.motor_run(speed=speed, blocking=False)
+
     def drive(self, left, right, force=False):
         left, right = int(np.clip(left, -100, 100)), int(np.clip(right, -100, 100))
         if self.sim is not None:
@@ -559,8 +634,11 @@ class Robot:
 
     def stop(self):
         self.last_sent = (0, 0)
+        self.single_last_sent, self.single_speed = 0, 0
         if self.motor is not None:
             self.motor.movement_stop(blocking=True)
+        if self.single_motor is not None:
+            self.single_motor.motor_stop(blocking=True)
         if self.sim is not None:
             self.sim.left = self.sim.right = 0
 
@@ -617,12 +695,14 @@ class Robot:
     def close(self):
         if self.sim is not None:
             self.sim.close()
-        for device in (self.motor, self.sensor):
+        for device in (self.motor, self.single_motor, self.sensor):
             if device is None:
                 continue
             try:
                 if device is self.motor:
                     device.movement_stop(blocking=True)
+                elif device is self.single_motor:
+                    device.motor_stop(blocking=True)
                 device.disconnect()
             except Exception as e:
                 print(f"Warning while disconnecting: {e}")
@@ -632,12 +712,16 @@ class Robot:
 # MQTT
 # ----------------------------------------------------------------------------
 
-def connect_mqtt(broker, inbox):
+def new_mqtt_client():
     client_id = f"ME193-whistle-{uuid.uuid4().hex[:8]}"
     try:  # paho-mqtt 2.x
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
+        return mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
     except AttributeError:  # paho-mqtt 1.x
-        client = mqtt.Client(client_id=client_id)
+        return mqtt.Client(client_id=client_id)
+
+
+def connect_mqtt(broker, inbox):
+    client = new_mqtt_client()
 
     def on_connect(client, *args):
         client.subscribe(MQTT_TOPIC)
@@ -661,6 +745,46 @@ def publish(client, text):
         return
     print(f"MQTT -> {text!r}")
     client.publish(MQTT_TOPIC, text, qos=1).wait_for_publish(timeout=3)
+
+
+class SingleMotorLink:
+    """Robot computer: listens on MOTOR_TOPIC for the Single Motor speed the
+    second whistler's computer sends. Its own MQTT connection, so it works in
+    --practice too (where the game connection is off)."""
+
+    def __init__(self, broker):
+        self.speed = 0
+        self.last_heard = 0.0
+        self.client = new_mqtt_client()
+
+        def on_connect(client, *args):
+            client.subscribe(MOTOR_TOPIC)
+            print(f"Single Motor link: listening on {MOTOR_TOPIC}")
+
+        def on_message(client, userdata, msg):
+            try:
+                self.speed = int(np.clip(int(msg.payload.decode().strip()), -100, 100))
+                self.last_heard = time.monotonic()
+            except ValueError:
+                pass   # ignore anything that isn't a plain number
+
+        self.client.on_connect = on_connect
+        self.client.on_message = on_message
+        self.client.connect(broker, MQTT_PORT, keepalive=60)
+        self.client.loop_start()
+
+    def current_speed(self):
+        """Latest speed, or 0 if the motor computer has gone quiet (crashed, Wi-Fi drop)."""
+        if time.monotonic() - self.last_heard > MOTOR_TIMEOUT_S:
+            return 0
+        return self.speed
+
+    def connected(self):
+        return time.monotonic() - self.last_heard <= MOTOR_TIMEOUT_S
+
+    def close(self):
+        self.client.loop_stop()
+        self.client.disconnect()
 
 
 # ----------------------------------------------------------------------------
@@ -723,9 +847,14 @@ def calibrate(pa, show_spectrogram=True):
         if len(seen) >= 10:
             # percentiles ignore the odd glitchy frame at either end
             low, high = np.percentile(seen, [5, 95])
-            print(f"\nYour range: about {low:.0f}-{high:.0f} Hz. Set these at the top of the file:")
-            print(f"WHISTLE_LOW_HZ = {low:.0f}")
-            print(f"WHISTLE_HIGH_HZ = {high:.0f}")
+            print(f"\nYour range: about {low:.0f}-{high:.0f} Hz. Set these at the top of the file.")
+            print("If you drive the robot (--role ball / goalie):")
+            print(f"    WHISTLE_LOW_HZ = {low:.0f}")
+            print(f"    WHISTLE_HIGH_HZ = {high:.0f}")
+            print("If you whistle the Single Motor (--role motor):")
+            print(f"    MOTOR_WHISTLE_LOW_HZ = {low:.0f}")
+            print(f"    MOTOR_WHISTLE_HIGH_HZ = {high:.0f}")
+            print(f"  (or run: --role motor --low {low:.0f} --high {high:.0f})")
 
 
 def test_sensor():
@@ -746,6 +875,62 @@ def test_sensor():
             time.sleep(0.1)
     finally:
         robot.close()
+
+
+def whistle_single_motor(pa, broker, low_hz, high_hz, show_spectrogram=True):
+    """Second computer: whistle the Single Motor's speed and send it to the robot over MQTT.
+
+    Low pitch = reverse, middle = stop, high = forward; the further from the
+    middle, the faster. Silence stops the motor. Runs until Ctrl+C.
+    """
+    bands = motor_bands(low_hz, high_hz)
+    print("Single Motor bands: " + ", ".join(f"{name} >= {lower:.0f} Hz" for lower, name in bands))
+    client = new_mqtt_client()
+    client.on_connect = lambda c, *a: print(f"MQTT connected to {broker}; sending speeds on {MOTOR_TOPIC}")
+    client.connect(broker, MQTT_PORT, keepalive=60)
+    client.loop_start()
+    detector = PitchDetector()
+    mic = open_mic(pa)
+    spectrogram = (Spectrogram(low_hz=low_hz, high_hz=high_hz, bands=bands, title="Single Motor whistle")
+                   if show_spectrogram else None)
+    recent = []                      # last few detected pitches, median-filtered against glitches
+    last_whistle = 0.0
+    speed = last_printed = 0
+    last_send = 0.0
+    try:
+        while True:
+            samples = read_chunk(mic)
+            freq, _ = detector.pitch(samples)
+            now = time.monotonic()
+            if freq is not None:
+                recent = (recent + [freq])[-STABLE_FRAMES:]
+                last_whistle = now
+                if len(recent) == STABLE_FRAMES:
+                    speed = motor_speed_for(float(np.median(recent)), low_hz, high_hz)
+            elif now - last_whistle > MOTOR_SILENCE_S:
+                recent, speed = [], 0
+
+            if now - last_send >= MOTOR_SEND_INTERVAL_S:   # steady heartbeat, even when unchanged
+                client.publish(MOTOR_TOPIC, str(speed), qos=0)
+                last_send = now
+            if speed != last_printed:
+                print(f"Single Motor -> {speed:+4d}%")
+                last_printed = speed
+
+            if spectrogram is not None:
+                command = band_for(float(np.median(recent)), bands) if recent else None
+                action = "MOTOR STOP" if speed == 0 else f"MOTOR {'FWD' if speed > 0 else 'REV'} {abs(speed)}%"
+                spectrogram.update(samples, freq, action, command, f"sending {speed:+d}% to robot")
+    finally:
+        try:   # leave the motor stopped
+            client.publish(MOTOR_TOPIC, "0", qos=1).wait_for_publish(timeout=2)
+        except Exception as e:
+            print(f"Warning: couldn't send the final stop: {e}")
+        client.loop_stop()
+        client.disconnect()
+        mic.close()
+        if spectrogram is not None:
+            spectrogram.close()
 
 
 def wait_for_start(inbox):
@@ -775,8 +960,11 @@ def describe_action(command, speed):
     return "STRAIGHT" if speed > 0 else "STOPPED"
 
 
-def play(role, robot, client, inbox, pa, spectrogram=None):
-    """Whistle-drive until the match ends; returns the song to play."""
+def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
+    """Whistle-drive until the match ends; returns the song to play.
+
+    With motor_link, the Single Motor also follows the speed whistled on the
+    second computer."""
     detector = PitchDetector()
     commands = WhistleCommands()
     speed = 0.0
@@ -839,19 +1027,25 @@ def play(role, robot, client, inbox, pa, spectrogram=None):
             # "goal" (not yet held long enough) and silence: keep speed, go straight
 
             robot.drive(speed + steer, speed - steer)
+            single = ""
+            if motor_link is not None:
+                robot.run_single_motor(motor_link.current_speed())
+                single = (f"  motor {robot.single_speed:+4d}%" if motor_link.connected()
+                          else "  motor (no signal)")
             pitch = "  -  " if freq is None else f"{freq:5.0f}"
-            robot.update(f"{command or 'silence':8s} speed {speed:3.0f}%   {pitch} Hz")
+            robot.update(f"{command or 'silence':8s} speed {speed:3.0f}%   {pitch} Hz{single}")
             if spectrogram is not None:
                 left, right = int(np.clip(speed + steer, -100, 100)), int(np.clip(speed - steer, -100, 100))
                 spectrogram.update(samples, freq, describe_action(command, speed), command,
-                                   f"speed {speed:3.0f}%  L{left:+4d} R{right:+4d}")
+                                   f"speed {speed:3.0f}%  L{left:+4d} R{right:+4d}{single}")
     finally:
         mic.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description="Whistle-controlled World Cup robot")
-    parser.add_argument("--role", choices=["ball", "goalie"], help="your assigned role")
+    parser.add_argument("--role", choices=["ball", "goalie", "motor"],
+                        help="your assigned role; 'motor' = second computer whistling the Single Motor")
     parser.add_argument("--broker", default=MQTT_BROKER, help="MQTT broker host")
     parser.add_argument("--calibrate", action="store_true", help="just print whistle pitch")
     parser.add_argument("--no-robot", action="store_true", help="drive an on-screen simulated robot instead of using BLE")
@@ -862,6 +1056,12 @@ def main():
                         help="live Color Sensor readings, to check goalie detection")
     parser.add_argument("--no-spectrogram", action="store_true",
                         help="don't open the live spectrogram window")
+    parser.add_argument("--single-motor", action="store_true",
+                        help="robot computer: also run the Single Motor from the --role motor computer")
+    parser.add_argument("--low", type=float, default=MOTOR_WHISTLE_LOW_HZ,
+                        help="--role motor: lowest whistle in Hz (from --calibrate)")
+    parser.add_argument("--high", type=float, default=MOTOR_WHISTLE_HIGH_HZ,
+                        help="--role motor: highest whistle in Hz (from --calibrate)")
     args = parser.parse_args()
 
     if args.test_sensor:
@@ -881,8 +1081,11 @@ def main():
             pa.terminate()
         return
     while args.role is None:  # e.g. launched from the IDE's Run button with no arguments
-        answer = input("Role? [b]all / [g]oalie / [p]ractice (offline) / [s]ensor test / [c]alibrate: ").strip().lower()
-        if answer in ("b", "ball"):
+        answer = input("Role? [b]all / [g]oalie / [m]otor (2nd computer) / [p]ractice (offline) / "
+                       "[s]ensor test / [c]alibrate: ").strip().lower()
+        if answer in ("m", "motor"):
+            args.role = "motor"
+        elif answer in ("b", "ball"):
             args.role = "ball"
         elif answer in ("g", "goalie"):
             args.role = "goalie"
@@ -907,14 +1110,32 @@ def main():
             finally:
                 pa.terminate()
             return
+        if args.role in ("ball", "goalie"):
+            args.single_motor = input("Also run the Single Motor from the 2nd computer? [y/N]: "
+                                      ).strip().lower() in ("y", "yes")
+
+    if args.role == "motor":
+        if args.low >= args.high:
+            parser.error("--low must be below --high")
+        try:
+            whistle_single_motor(pa, args.broker, args.low, args.high,
+                                 show_spectrogram=not args.no_spectrogram)
+        except KeyboardInterrupt:
+            print("\nQuitting.")
+        finally:
+            pa.terminate()
+        return
 
     robot = None
     client = None
     spectrogram = None
+    motor_link = None
     try:
         inbox = queue.Queue()
         robot = Robot(use_hardware=not args.no_robot, need_sensor=args.role == "ball",
-                      role=args.role, inbox=inbox)
+                      role=args.role, inbox=inbox, need_single_motor=args.single_motor and not args.no_robot)
+        if args.single_motor:
+            motor_link = SingleMotorLink(args.broker)
         robot.calibrate_light()
         if args.practice:
             print(f"[practice] Not connecting to MQTT; nothing is sent on {MQTT_TOPIC}. Ctrl+C to quit.")
@@ -925,7 +1146,7 @@ def main():
             wait_for_start(inbox)
         if not args.no_spectrogram:   # shares the simulator's window loop when there is one
             spectrogram = Spectrogram(robot.sim.root if robot.sim is not None else None)
-        song = play(args.role, robot, client, inbox, pa, spectrogram)
+        song = play(args.role, robot, client, inbox, pa, spectrogram, motor_link)
         robot.stop()
         if spectrogram is not None:
             spectrogram.show("VICTORY!" if song is VICTORY_SONG else "DEFEAT...", "playing the song")
@@ -935,6 +1156,8 @@ def main():
     finally:
         if spectrogram is not None:
             spectrogram.close()
+        if motor_link is not None:
+            motor_link.close()
         if robot is not None:
             robot.close()
         if client is not None:
