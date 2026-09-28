@@ -96,8 +96,13 @@ your opponent never sees them.
 | Event | Who publishes | Message | Ball plays | Goalie plays |
 |---|---|---|---|---|
 | Kick-off | instructor | `start` | – | – |
-| Goalie reaches the ball's light sensor | ball | `ball_caught` | death song | victory song |
-| Ball whistles GOAL in the goal | ball | `goal_scored` | victory song | death song |
+| Goalie reaches the ball's light sensor | ball | `RLS-ball_caught` | death song | victory song |
+| Ball whistles GOAL in the goal | ball | `RLS-goal_scored` | victory song | death song |
+
+Everyone in ME193 listens on `ME193/Rogers`, so the result messages start with a
+match code (`MATCH_CODE`, currently `RLS`) that only you and your opponent use.
+Set the same code on both robots before the match; messages with any other code
+are ignored.
 
 The ball averages the light sensor's reflection at startup, so keep the area in
 front of it clear then. After that, a change of `CATCH_DELTA` counts as "caught".

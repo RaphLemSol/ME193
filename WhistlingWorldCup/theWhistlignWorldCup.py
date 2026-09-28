@@ -72,9 +72,12 @@ CARD_SERIAL = "6065"  # <-- update to match your Connection Card
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "ME193/Rogers"
-MSG_START = "start"
-MSG_BALL_CAUGHT = "ball_caught"    # ball -> everyone: the goalie got me (goalie wins)
-MSG_GOAL_SCORED = "goal_scored"    # ball -> everyone: I made it into the goal (ball wins)
+MSG_START = "start"                # sent by the instructor to every team, so it has no match code
+# Everyone in ME193 listens on this topic, so the result messages carry a match
+# code that only you and your opponent use. Both robots must set the same code.
+MATCH_CODE = "RLS"
+MSG_BALL_CAUGHT = f"{MATCH_CODE}-ball_caught"   # ball -> goalie: the goalie got me (goalie wins)
+MSG_GOAL_SCORED = f"{MATCH_CODE}-goal_scored"   # ball -> goalie: I made it into the goal (ball wins)
 
 # --- Audio / pitch detection ---
 SAMPLE_RATE = 44100
