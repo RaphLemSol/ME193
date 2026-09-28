@@ -53,6 +53,15 @@ Close the window or press **Ctrl+C** to quit.
 
 Press **Ctrl+C** to quit at any time; the robot stops and disconnects.
 
+### Live spectrogram
+
+Playing and `--calibrate` open a live spectrogram window: the last ~11 s of mic
+audio scrolls right to left, with your detected pitch traced in cyan. The top left
+shows the pitch in Hz and the nearest note (e.g. `B5 +21c`); the top right shows
+what the robot is doing (`FASTER`, `TURN LEFT`, `STOPPED`, ...) with its speed and
+wheel powers. The command bands are drawn on the right and light up when active.
+Closing the window quits. Use `--no-spectrogram` to turn it off.
+
 ## Match protocol (agree with your opponent!)
 
 | Event | Who publishes | Message | Ball plays | Goalie plays |
