@@ -36,6 +36,7 @@ Usage:
     python theWhistlignWorldCup.py --role ball --practice --no-robot   # ...and watch a simulated robot
     python theWhistlignWorldCup.py --role goalie --practice --no-robot # goalie vs a CPU ball
     python theWhistlignWorldCup.py --test-sensor        # live light-sensor readings
+    python theWhistlignWorldCup.py --role ball --no-spectrogram   # no live spectrogram window
 
 Press Ctrl+C to quit; the robot always stops and disconnects.
 """
@@ -80,8 +81,8 @@ STABLE_FRAMES = 3            # a band must repeat this many frames in a row befo
 # highest notes, then paste the suggested values it prints here. The range is
 # split into pitch bands, lowest to highest, sized by these weights. "faster" is
 # used most, so it gets a double-width band that's easy to hit.
-WHISTLE_LOW_HZ = 600
-WHISTLE_HIGH_HZ = 1700
+WHISTLE_LOW_HZ = 520
+WHISTLE_HIGH_HZ = 1744
 BAND_WEIGHTS = [("stop", 1), ("left", 1), ("right", 1), ("faster", 2), ("goal", 1)]
 _unit_hz = (WHISTLE_HIGH_HZ - WHISTLE_LOW_HZ) / sum(w for _, w in BAND_WEIGHTS)
 # (lower bound in Hz, command); the lowest band catches everything below it too
@@ -187,6 +188,164 @@ class WhistleCommands:
             self.goal_last_seen = now
         goal_claimed = self.goal_since is not None and now - self.goal_since >= GOAL_HOLD_S
         return stable, goal_claimed
+
+
+NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"]
+
+
+def note_for(freq):
+    """Nearest musical note and how far off it is, e.g. 'A5 +12c'."""
+    midi = 69 + 12 * np.log2(freq / 440)
+    nearest = int(round(midi))
+    cents = int(round(100 * (midi - nearest)))
+    return f"{NOTE_NAMES[nearest % 12]}{nearest // 12 - 1} {cents:+d}c"
+
+
+# ----------------------------------------------------------------------------
+# Live spectrogram window
+# ----------------------------------------------------------------------------
+
+COMMAND_COLORS = {"stop": "#ef5350", "left": "#42a5f5", "right": "#ab47bc",
+                  "faster": "#66bb6a", "goal": "#ffca28"}
+
+
+class Spectrogram:
+    """Scrolling spectrogram of the mic, with the detected pitch, its note, the
+    command bands, and what the robot is doing. Closing the window quits."""
+
+    IMG_W, IMG_H = 500, 300   # spectrogram image in px (time x frequency)
+    COLS_PER_FRAME = 2        # px scrolled per audio frame (~11 s of history)
+    LEFT, RIGHT, TOP = 55, 90, 80   # margins for Hz ticks, band names, header
+    DB_RANGE = 60             # dB from the loudest recent bin down to black
+    MIN_TOP_DB = 20           # keeps silence dark instead of amplifying noise
+
+    def __init__(self, master=None):
+        import tkinter as tk
+        self.owns_root = master is None
+        self.win = tk.Tk() if self.owns_root else tk.Toplevel(master)
+        self.win.title("Whistling World Cup - live spectrogram")
+        self.win.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.closed = False
+        self.tk = tk
+
+        self.lo_hz = max(0, WHISTLE_LOW_HZ - 300)
+        self.hi_hz = WHISTLE_HIGH_HZ + 500
+        self.row_hz = np.linspace(self.hi_hz, self.lo_hz, self.IMG_H)   # top row = highest pitch
+        self.bin_hz = np.fft.rfftfreq(CHUNK, 1 / SAMPLE_RATE)
+        self.window = np.hanning(CHUNK).astype(np.float32)
+        self.top_db = self.MIN_TOP_DB
+        self.img = np.zeros((self.IMG_H, self.IMG_W, 3), dtype=np.uint8)
+        # black -> purple -> orange -> pale yellow, like matplotlib's "magma"
+        anchors = np.array([[0, 0, 4], [80, 18, 123], [182, 54, 121], [251, 136, 97], [252, 253, 191]])
+        x = np.linspace(0, 1, len(anchors))
+        self.lut = np.stack([np.interp(np.linspace(0, 1, 256), x, anchors[:, c])
+                             for c in range(3)], axis=1).astype(np.uint8)
+
+        w = self.LEFT + self.IMG_W + self.RIGHT
+        h = self.TOP + self.IMG_H + 25
+        self.canvas = tk.Canvas(self.win, width=w, height=h, bg="#121212", highlightthickness=0)
+        self.canvas.pack()
+        self.photo = None
+        self.image = self.canvas.create_image(self.LEFT, self.TOP, anchor="nw")
+
+        # Hz ticks on the left
+        for hz in range(int(np.ceil(self.lo_hz / 250) * 250), self.hi_hz + 1, 250):
+            y = self._y(hz)
+            self.canvas.create_line(self.LEFT - 5, y, self.LEFT, y, fill="#888")
+            self.canvas.create_text(self.LEFT - 8, y, anchor="e", text=str(hz), fill="#aaa",
+                                    font=("Helvetica", 9))
+        self.canvas.create_text(self.LEFT + self.IMG_W / 2, self.TOP + self.IMG_H + 13,
+                                text="time -> (newest on the right)", fill="#777", font=("Helvetica", 9))
+
+        # Command bands: dashed boundaries across the image, coloured strips on the right
+        self.strips = {}
+        x0, x1 = self.LEFT + self.IMG_W + 5, self.LEFT + self.IMG_W + self.RIGHT - 5
+        for i, (lower, name) in enumerate(BANDS):
+            upper = BANDS[i + 1][0] if i + 1 < len(BANDS) else self.hi_hz
+            y_top, y_bot = self._y(upper), self._y(max(lower, self.lo_hz))
+            color = COMMAND_COLORS.get(name, "#bbb")
+            self.strips[name] = self.canvas.create_rectangle(x0, y_top, x1, y_bot, fill="#1e1e1e",
+                                                             outline=color, width=2)
+            self.canvas.create_text((x0 + x1) / 2, (y_top + y_bot) / 2, text=name.upper(),
+                                    fill=color, font=("Helvetica", 11, "bold"))
+            if i > 0:
+                self.canvas.create_line(self.LEFT, y_bot, self.LEFT + self.IMG_W, y_bot,
+                                        fill=color, dash=(4, 4))
+        self.marker = self.canvas.create_polygon(0, 0, 0, 0, 0, 0, fill="white", state="hidden")
+
+        # Header: pitch + note on the left, robot action on the right
+        self.pitch_text = self.canvas.create_text(12, 12, anchor="nw", fill="white",
+                                                  font=("Courier", 22, "bold"), text="-- Hz")
+        self.note_text = self.canvas.create_text(12, 48, anchor="nw", fill="#bbb",
+                                                 font=("Courier", 14), text="no whistle")
+        self.action_text = self.canvas.create_text(w - 12, 10, anchor="ne", fill="white",
+                                                   font=("Helvetica", 26, "bold"), text="WAITING")
+        self.detail_text = self.canvas.create_text(w - 12, 50, anchor="ne", fill="#bbb",
+                                                   font=("Courier", 13), text="")
+        self.win.update()
+
+    def _on_close(self):
+        self.closed = True
+
+    def _y(self, hz):
+        return self.TOP + (self.hi_hz - hz) / (self.hi_hz - self.lo_hz) * (self.IMG_H - 1)
+
+    def update(self, samples, freq, action, command=None, detail=""):
+        """Add one audio frame and show the robot's current action."""
+        if self.closed:
+            raise KeyboardInterrupt
+
+        # New spectrum column, in dB, scaled to the loudest recent bin
+        db = 20 * np.log10(np.abs(np.fft.rfft(samples * self.window)) + 1e-9)
+        column = np.interp(self.row_hz, self.bin_hz, db)
+        self.top_db = max(self.top_db - 0.3, float(column.max()), self.MIN_TOP_DB)
+        level = np.clip((column - (self.top_db - self.DB_RANGE)) / self.DB_RANGE, 0, 1)
+        colors = self.lut[(level * 255).astype(int)]
+
+        n = self.COLS_PER_FRAME
+        self.img[:, :-n] = self.img[:, n:]
+        self.img[:, -n:] = colors[:, None, :]
+        if freq is not None and self.lo_hz <= freq <= self.hi_hz:   # detected pitch trace
+            row = int(round(self._y(freq) - self.TOP))
+            self.img[max(0, row - 1):row + 2, -n:] = (0, 255, 255)
+        header = b"P6 %d %d 255 " % (self.IMG_W, self.IMG_H)
+        self.photo = self.tk.PhotoImage(data=header + self.img.tobytes(), format="PPM")
+        self.canvas.itemconfig(self.image, image=self.photo)
+
+        # Labels
+        if freq is None:
+            self.canvas.itemconfig(self.pitch_text, text="-- Hz")
+            self.canvas.itemconfig(self.note_text, text="no whistle")
+            self.canvas.itemconfig(self.marker, state="hidden")
+        else:
+            self.canvas.itemconfig(self.pitch_text, text=f"{freq:5.0f} Hz")
+            self.canvas.itemconfig(self.note_text, text=f"{note_for(freq)}  -> {band_for(freq)}")
+            y = min(max(self._y(freq), self.TOP), self.TOP + self.IMG_H)
+            x = self.LEFT + self.IMG_W
+            self.canvas.coords(self.marker, x, y, x + 10, y - 7, x + 10, y + 7)
+            self.canvas.itemconfig(self.marker, state="normal")
+            self.canvas.tag_raise(self.marker)
+        for name, strip in self.strips.items():
+            self.canvas.itemconfig(strip, fill=COMMAND_COLORS[name] if name == command else "#1e1e1e")
+        self.canvas.itemconfig(self.action_text, text=action,
+                               fill=COMMAND_COLORS.get(command, "white"))
+        self.canvas.itemconfig(self.detail_text, text=detail)
+        if self.owns_root:
+            self.win.update()
+        else:
+            self.win.update_idletasks()
+
+    def show(self, action, detail=""):
+        """Freeze on a final message, e.g. the match result."""
+        self.canvas.itemconfig(self.action_text, text=action, fill="white")
+        self.canvas.itemconfig(self.detail_text, text=detail)
+        self.win.update()
+
+    def close(self):
+        try:
+            self.win.destroy()
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------------
@@ -538,21 +697,29 @@ def read_chunk(mic):
     return np.frombuffer(mic.read(CHUNK, exception_on_overflow=False), dtype=np.float32)
 
 
-def calibrate(pa):
+def calibrate(pa, show_spectrogram=True):
     """Print the pitch you're whistling, then suggest WHISTLE_LOW_HZ / WHISTLE_HIGH_HZ."""
     detector = PitchDetector()
     mic = open_mic(pa)
+    spectrogram = Spectrogram() if show_spectrogram else None
     print("Current bands: " + ", ".join(f"{name} >= {lower:.0f} Hz" for lower, name in BANDS))
-    print("Whistle your LOWEST and HIGHEST comfortable notes, then press Ctrl+C.")
+    print("Whistle your LOWEST and HIGHEST comfortable notes, then press Ctrl+C (or close the window).")
     seen = []
     try:
         while True:
-            freq, rms = detector.pitch(read_chunk(mic))
+            samples = read_chunk(mic)
+            freq, rms = detector.pitch(samples)
             if freq is not None:
                 seen.append(freq)
-                print(f"{freq:7.0f} Hz  rms={rms:.3f}  -> {band_for(freq)}")
+                print(f"{freq:7.0f} Hz  {note_for(freq):9s} rms={rms:.3f}  -> {band_for(freq)}")
+            if spectrogram is not None:
+                band = band_for(freq)
+                spectrogram.update(samples, freq, "CALIBRATING", band,
+                                   f"heard {len(seen)} whistle frames")
     finally:
         mic.close()
+        if spectrogram is not None:
+            spectrogram.close()
         if len(seen) >= 10:
             # percentiles ignore the odd glitchy frame at either end
             low, high = np.percentile(seen, [5, 95])
@@ -593,7 +760,22 @@ def wait_for_start(inbox):
             return
 
 
-def play(role, robot, client, inbox, pa):
+def describe_action(command, speed):
+    """What the robot is doing, in words, for the spectrogram header."""
+    if command == "left":
+        return "SPIN LEFT" if speed == 0 else "TURN LEFT"
+    if command == "right":
+        return "SPIN RIGHT" if speed == 0 else "TURN RIGHT"
+    if command == "stop":
+        return "STOP"
+    if command == "faster":
+        return "MAX SPEED" if speed >= MAX_SPEED else "FASTER"
+    if command == "goal":
+        return "GOAL? HOLD IT"
+    return "STRAIGHT" if speed > 0 else "STOPPED"
+
+
+def play(role, robot, client, inbox, pa, spectrogram=None):
     """Whistle-drive until the match ends; returns the song to play."""
     detector = PitchDetector()
     commands = WhistleCommands()
@@ -625,7 +807,8 @@ def play(role, robot, client, inbox, pa):
                 return DEATH_SONG
 
             # --- Whistle -> command ---
-            freq, _ = detector.pitch(read_chunk(mic))
+            samples = read_chunk(mic)
+            freq, _ = detector.pitch(samples)
             command, goal_claimed = commands.update(band_for(freq))
 
             if goal_claimed and role == "ball" and not robot.in_goal():
@@ -658,6 +841,10 @@ def play(role, robot, client, inbox, pa):
             robot.drive(speed + steer, speed - steer)
             pitch = "  -  " if freq is None else f"{freq:5.0f}"
             robot.update(f"{command or 'silence':8s} speed {speed:3.0f}%   {pitch} Hz")
+            if spectrogram is not None:
+                left, right = int(np.clip(speed + steer, -100, 100)), int(np.clip(speed - steer, -100, 100))
+                spectrogram.update(samples, freq, describe_action(command, speed), command,
+                                   f"speed {speed:3.0f}%  L{left:+4d} R{right:+4d}")
     finally:
         mic.close()
 
@@ -673,6 +860,8 @@ def main():
                         help=f"offline practice: no MQTT ({MQTT_TOPIC}), starts immediately")
     parser.add_argument("--test-sensor", action="store_true",
                         help="live Color Sensor readings, to check goalie detection")
+    parser.add_argument("--no-spectrogram", action="store_true",
+                        help="don't open the live spectrogram window")
     args = parser.parse_args()
 
     if args.test_sensor:
@@ -685,7 +874,7 @@ def main():
     pa = pyaudio.PyAudio()
     if args.calibrate:
         try:
-            calibrate(pa)
+            calibrate(pa, show_spectrogram=not args.no_spectrogram)
         except KeyboardInterrupt:
             pass
         finally:
@@ -712,7 +901,7 @@ def main():
             return
         elif answer in ("c", "calibrate"):
             try:
-                calibrate(pa)
+                calibrate(pa, show_spectrogram=not args.no_spectrogram)
             except KeyboardInterrupt:
                 pass
             finally:
@@ -721,6 +910,7 @@ def main():
 
     robot = None
     client = None
+    spectrogram = None
     try:
         inbox = queue.Queue()
         robot = Robot(use_hardware=not args.no_robot, need_sensor=args.role == "ball",
@@ -733,12 +923,18 @@ def main():
 
         if not (args.skip_start or args.practice):
             wait_for_start(inbox)
-        song = play(args.role, robot, client, inbox, pa)
+        if not args.no_spectrogram:   # shares the simulator's window loop when there is one
+            spectrogram = Spectrogram(robot.sim.root if robot.sim is not None else None)
+        song = play(args.role, robot, client, inbox, pa, spectrogram)
         robot.stop()
+        if spectrogram is not None:
+            spectrogram.show("VICTORY!" if song is VICTORY_SONG else "DEFEAT...", "playing the song")
         play_song(pa, song)
     except KeyboardInterrupt:
         print("\nQuitting.")
     finally:
+        if spectrogram is not None:
+            spectrogram.close()
         if robot is not None:
             robot.close()
         if client is not None:
