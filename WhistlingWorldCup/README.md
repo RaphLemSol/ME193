@@ -62,6 +62,35 @@ what the robot is doing (`FASTER`, `TURN LEFT`, `STOPPED`, ...) with its speed a
 wheel powers. The command bands are drawn on the right and light up when active.
 Closing the window quits. Use `--no-spectrogram` to turn it off.
 
+### Two whistlers, one robot: the Single Motor
+
+A second teammate whistles a **Single Motor** on the same robot from their own
+computer, using their own mic and pitch range. The two computers talk over MQTT:
+
+```
+partner's mic -> partner's computer --MQTT--> robot computer --BLE--> Single Motor
+ (--role motor)     speed -100..100     ME193/Rogers/<CARD_SERIAL>/single_motor
+```
+
+| Partner's whistle (their range) | Single Motor |
+|---|---|
+| lowest end | full reverse |
+| lower part | reverse, slower toward the middle |
+| middle (`MOTOR_STOP_SHARE` of the range) | stop |
+| upper part | forward, faster toward the top |
+| highest end | full forward |
+| silence | stop |
+
+1. **Partner calibrates:** `python theWhistlignWorldCup.py --calibrate`. At the end it prints `MOTOR_WHISTLE_LOW_HZ` / `MOTOR_WHISTLE_HIGH_HZ` to paste at the top of the file, or a ready-made `--low ... --high ...`.
+2. **Partner runs:** `python theWhistlignWorldCup.py --role motor --low 700 --high 1900` (with their numbers). Their spectrogram shows the reverse / stop / forward bands and the speed being sent.
+3. **Robot computer runs its usual role plus `--single-motor`:** e.g. `python theWhistlignWorldCup.py --role ball --single-motor`. It connects the Single Motor (same Connection Card as the Double Motor) and shows `motor +45%` in its spectrogram.
+
+The partner's computer sends ~10 messages a second. If the robot computer hears
+nothing for `MOTOR_TIMEOUT_S` (1 s), it stops the Single Motor, so a crash or a
+Wi-Fi drop can't leave it spinning. Both computers must use the same `CARD_SERIAL`,
+since it's part of the topic. That keeps these messages private to your robot, and
+your opponent never sees them.
+
 ## Match protocol (agree with your opponent!)
 
 | Event | Who publishes | Message | Ball plays | Goalie plays |
