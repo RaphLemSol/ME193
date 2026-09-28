@@ -12,8 +12,10 @@ whistle, and the pitch band picks a driving command:
     HIGH                speed up (keep whistling to keep accelerating)
     VERY HIGH, held     "GOAL!" special command (ball only)
 
-Silence keeps the current speed and straightens the wheels. If you whistle a
-turn while stopped, the robot spins in place so you can aim.
+Keep whistling to keep moving: when the whistle stops (for longer than
+SILENCE_STOP_S) the Double Motor stops. If you whistle a turn while stopped,
+the robot spins in place so you can aim. Background noise is measured for a
+second at startup and filtered out.
 
 Game flow (both roles wait for "start" on MQTT topic ME193/Rogers):
 
@@ -82,11 +84,18 @@ MSG_GOAL_SCORED = f"{MATCH_CODE}-goal_scored"   # ball -> goalie: I made it into
 # --- Audio / pitch detection ---
 SAMPLE_RATE = 44100
 CHUNK = 2048                 # ~46 ms per analysis frame
-MIN_WHISTLE_HZ = 500         # ignore anything outside the human whistle range
-MAX_WHISTLE_HZ = 4500
+MIN_WHISTLE_HZ = 450         # ignore anything outside the human whistle range
+MAX_WHISTLE_HZ = 2500        # (was 4500; nobody here whistles that high, noise does)
 MIN_RMS = 0.01               # frame must be at least this loud (0..1 full scale)
-MIN_TONALITY = 15.0          # peak / median spectrum; whistles are pure tones, speech/noise isn't
+MIN_TONALITY = 20.0          # peak / median spectrum; whistles are pure tones, speech/noise isn't
+MIN_PEAK_SHARE = 0.35        # share of the in-band energy that must sit right at the peak
 STABLE_FRAMES = 3            # a band must repeat this many frames in a row before it counts
+
+# --- Background-noise removal ---
+NOISE_LEARN_S = 1.0          # at startup, listen this long to the room (don't whistle!)
+NOISE_RMS_FACTOR = 1.25      # skip frames barely louder than the room overall
+NOISE_SNR = 4.0              # ...and this much louder than the room at its own pitch
+NOISE_ADAPT = 0.02           # how quickly the noise estimate follows the room between whistles
 
 # Your comfortable whistle range in Hz. Run --calibrate, whistle your lowest and
 # highest notes, then paste the suggested values it prints here. The range is
@@ -108,6 +117,7 @@ GOAL_GAP_S = 0.3             # a GOAL hold survives dropouts shorter than this
 # --- Driving ---
 MAX_SPEED = 80               # percent
 SPEED_STEP = 4               # speed added per "faster" frame (~46 ms)
+SILENCE_STOP_S = 0.35        # stop the Double Motor once no whistle is heard for this long
 TURN_DIFF = 30               # speed difference between wheels while turning
 SEND_INTERVAL_S = 1 / 15     # throttle BLE commands to ~15 Hz
 
@@ -148,7 +158,11 @@ VICTORY_SONG = [  # stadium "Charge!"
 # ----------------------------------------------------------------------------
 
 class PitchDetector:
-    """Finds the dominant whistle frequency in one chunk of audio, or None."""
+    """Finds the dominant whistle frequency in one chunk of audio, or None.
+
+    Call learn_noise() first to measure the room; its noise is then subtracted
+    from every frame, and the estimate keeps adapting while you aren't whistling.
+    """
 
     def __init__(self):
         self.window = np.hanning(CHUNK).astype(np.float32)
@@ -156,16 +170,49 @@ class PitchDetector:
         self.band = (freqs >= MIN_WHISTLE_HZ) & (freqs <= MAX_WHISTLE_HZ)
         self.band_start = int(np.argmax(self.band))
         self.hz_per_bin = SAMPLE_RATE / CHUNK
+        self.noise = None        # room's average spectrum in the whistle band
+        self.noise_rms = 0.0
+
+    def learn_noise(self, mic, seconds=NOISE_LEARN_S):
+        """Listen to the room with nobody whistling, to know what to ignore."""
+        print(f"Measuring background noise for {seconds:.0f} s - don't whistle...")
+        spectra, levels = [], []
+        for _ in range(max(1, int(seconds * SAMPLE_RATE / CHUNK))):
+            samples = read_chunk(mic)
+            spectra.append(np.abs(np.fft.rfft(samples * self.window))[self.band])
+            levels.append(float(np.sqrt(np.mean(samples ** 2))))
+        self.noise = np.median(spectra, axis=0)   # median ignores a stray clap or cough
+        self.noise_rms = float(np.median(levels))
+        print(f"Background level {self.noise_rms:.4f}; whistles need to be louder than "
+              f"{max(MIN_RMS, NOISE_RMS_FACTOR * self.noise_rms):.4f}.")
+
+    def _adapt(self, in_band, rms):
+        """Blend a whistle-free frame into the noise estimate, so it follows the room.
+        Loud bursts (claps, shouts) are skipped so they don't inflate it."""
+        if self.noise is not None and rms <= 2 * self.noise_rms:
+            self.noise += NOISE_ADAPT * (in_band - self.noise)
+            self.noise_rms += NOISE_ADAPT * (rms - self.noise_rms)
 
     def pitch(self, samples):
         rms = float(np.sqrt(np.mean(samples ** 2)))
-        if rms < MIN_RMS:
-            return None, rms
         spectrum = np.abs(np.fft.rfft(samples * self.window))
         in_band = spectrum[self.band]
-        peak = int(np.argmax(in_band))
-        if in_band[peak] < MIN_TONALITY * (np.median(in_band) + 1e-9):
+        if rms < max(MIN_RMS, NOISE_RMS_FACTOR * self.noise_rms):
+            self._adapt(in_band, rms)
             return None, rms
+
+        # Remove the room's noise, then look for one sharp, strong peak
+        clean = in_band if self.noise is None else np.maximum(in_band - self.noise, 0.0)
+        peak = int(np.argmax(clean))
+        near = clean[max(0, peak - 2):peak + 3]
+        loud_enough = self.noise is None or in_band[peak] >= NOISE_SNR * (self.noise[peak] + 1e-9)
+        tonal = clean[peak] >= MIN_TONALITY * (np.median(clean) + 1e-9)
+        sharp = np.sum(near ** 2) >= MIN_PEAK_SHARE * (np.sum(clean ** 2) + 1e-12)
+        if not (loud_enough and tonal and sharp):
+            self._adapt(in_band, rms)
+            return None, rms
+        spectrum = spectrum.copy()
+        spectrum[self.band] = clean
 
         # Parabolic interpolation between neighbouring bins for sub-bin accuracy
         i = self.band_start + peak
@@ -828,6 +875,7 @@ def calibrate(pa, show_spectrogram=True):
     """Print the pitch you're whistling, then suggest WHISTLE_LOW_HZ / WHISTLE_HIGH_HZ."""
     detector = PitchDetector()
     mic = open_mic(pa)
+    detector.learn_noise(mic)
     spectrogram = Spectrogram() if show_spectrogram else None
     print("Current bands: " + ", ".join(f"{name} >= {lower:.0f} Hz" for lower, name in BANDS))
     print("Whistle your LOWEST and HIGHEST comfortable notes, then press Ctrl+C (or close the window).")
@@ -894,6 +942,7 @@ def whistle_single_motor(pa, broker, low_hz, high_hz, show_spectrogram=True):
     client.loop_start()
     detector = PitchDetector()
     mic = open_mic(pa)
+    detector.learn_noise(mic)
     spectrogram = (Spectrogram(low_hz=low_hz, high_hz=high_hz, bands=bands, title="Single Motor whistle")
                    if show_spectrogram else None)
     recent = []                      # last few detected pitches, median-filtered against glitches
@@ -973,6 +1022,8 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
     speed = 0.0
     last_command = None
     mic = open_mic(pa)
+    detector.learn_noise(mic)
+    last_heard = time.monotonic()
     try:
         while True:
             # --- MQTT results (the goalie learns the outcome here) ---
@@ -1001,6 +1052,9 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
             samples = read_chunk(mic)
             freq, _ = detector.pitch(samples)
             command, goal_claimed = commands.update(band_for(freq))
+            now = time.monotonic()
+            if freq is not None:
+                last_heard = now
 
             if goal_claimed and role == "ball" and not robot.in_goal():
                 print("Not in the goal yet - drive into the box first!")
@@ -1027,7 +1081,10 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
                 steer = -TURN_DIFF
             elif command == "right":
                 steer = TURN_DIFF
-            # "goal" (not yet held long enough) and silence: keep speed, go straight
+            # "goal" (not yet held long enough): keep speed, go straight.
+            # No whistle for SILENCE_STOP_S: stop, until you whistle again.
+            if freq is None and now - last_heard > SILENCE_STOP_S:
+                speed = 0.0
 
             robot.drive(speed + steer, speed - steer)
             single = ""

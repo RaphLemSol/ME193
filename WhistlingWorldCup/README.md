@@ -27,7 +27,9 @@ Your whistle range (`WHISTLE_LOW_HZ` to `WHISTLE_HIGH_HZ` at the top of the scri
 | 1075–1325 Hz | speed up (keep whistling to keep accelerating) |
 | > 1325 Hz, held 1 s | **GOAL!** (ball only) |
 
-Silence keeps your current speed and drives straight.
+Keep whistling to keep moving: when you stop whistling, the Double Motor stops (after a short `SILENCE_STOP_S` grace, so a quick breath doesn't count).
+
+**Background noise:** at startup the script listens to the room for about a second (don't whistle), then subtracts that noise from everything it hears and keeps updating it between whistles. A sound only counts as a whistle if it's clearly louder than the room at its own pitch and most of its energy sits in one sharp peak. If noise still gets through, raise `NOISE_SNR`, `NOISE_RMS_FACTOR` or `MIN_PEAK_SHARE`; if your whistle stops registering, lower them.
 
 ## Running
 
