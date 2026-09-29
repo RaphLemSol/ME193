@@ -27,7 +27,9 @@ Game flow (both roles wait for "start" on MQTT topic ME193/Rogers):
   goalie - Drives to block the ball. On MSG_BALL_CAUGHT it plays the victory
            song; on MSG_GOAL_SCORED it plays the death song.
 
-Agree on MSG_BALL_CAUGHT / MSG_GOAL_SCORED with your opponent before the match.
+Results are JSON, e.g. {"event": "goal", "team": "RARA"}: agree on the events
+(MSG_BALL_CAUGHT / MSG_GOAL_SCORED) and team names (OPPONENT_TEAM / OUR_TEAM)
+with your opponent before the match.
 
 Two whistlers, one robot: a second computer runs --role motor and whistles a
 Single Motor on the same robot (low = reverse, middle = stop, high = forward,
@@ -52,6 +54,8 @@ Press Ctrl+C to quit; the robot always stops and disconnects.
 """
 
 import argparse
+import ast
+import json
 import queue
 import sys
 import time
@@ -74,12 +78,15 @@ CARD_SERIAL = "6065"  # <-- update to match your Connection Card
 MQTT_BROKER = "broker.hivemq.com"
 MQTT_PORT = 1883
 MQTT_TOPIC = "ME193/Rogers"
-MSG_START = "start"                # sent by the instructor to every team, so it has no match code
-# Everyone in ME193 listens on this topic, so the result messages carry a match
-# code that only you and your opponent use. Both robots must set the same code.
-MATCH_CODE = "RLS"
-MSG_BALL_CAUGHT = f"{MATCH_CODE}-ball_caught"   # ball -> goalie: the goalie got me (goalie wins)
-MSG_GOAL_SCORED = f"{MATCH_CODE}-goal_scored"   # ball -> goalie: I made it into the goal (ball wins)
+MSG_START = "start"                # sent by the instructor to every team
+# Result messages agreed with our opponent, sent by the ball as JSON:
+#     {"event": "goal" or "fail", "team": "<the ball's team>"}
+# Everyone in ME193 shares MQTT_TOPIC, so the goalie only accepts results whose
+# "team" is OPPONENT_TEAM; other matches' results are ignored.
+MSG_BALL_CAUGHT = "fail"   # event, ball -> goalie: the goalie got me (goalie wins)
+MSG_GOAL_SCORED = "goal"   # event, ball -> goalie: I made it into the goal (ball wins)
+OPPONENT_TEAM = "RARA"     # the other team's name, as they send it in "team"
+OUR_TEAM = "RLS"           # our name in "team" when we're the ball <-- agree with opponent
 
 # --- Audio / pitch detection ---
 SAMPLE_RATE = 44100
@@ -554,11 +561,11 @@ class Simulator:
         if self._sees(self.opp_x, self.opp_y, self.opp_heading, self.x, self.y):
             self.finished = True
             print(f"[sim] CPU ball's light sensor saw you -> {MSG_BALL_CAUGHT!r}")
-            self.inbox.put(MSG_BALL_CAUGHT)
+            self.inbox.put(result_message(MSG_BALL_CAUGHT, team=OPPONENT_TEAM))
         elif self._in_mouth(self.opp_x, self.opp_y, depth=30):
             self.finished = True
             print(f"[sim] CPU ball reached the goal -> {MSG_GOAL_SCORED!r}")
-            self.inbox.put(MSG_GOAL_SCORED)
+            self.inbox.put(result_message(MSG_GOAL_SCORED, team=OPPONENT_TEAM))
 
     def update(self, status):
         """Advance the physics to now and redraw. Closing the window quits the game."""
@@ -798,6 +805,32 @@ def publish(client, text):
     client.publish(MQTT_TOPIC, text, qos=1).wait_for_publish(timeout=3)
 
 
+def result_message(event, team=OUR_TEAM):
+    """The JSON result the ball sends, e.g. {"event": "goal", "team": "RLS"}."""
+    return json.dumps({"event": event, "team": team})
+
+
+def read_result(text):
+    """The event ("goal" / "fail") in a result from OPPONENT_TEAM, or None for
+    anything else (other teams' matches, "start", junk)."""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        try:   # tolerate Python-style quotes: {'event': 'goal', 'team': 'RARA'}
+            data = ast.literal_eval(text)
+        except (ValueError, SyntaxError):
+            return None
+    if not isinstance(data, dict):
+        return None
+    event = str(data.get("event", "")).strip().lower()
+    team = str(data.get("team", "")).strip()
+    if team.lower() != OPPONENT_TEAM.lower():
+        if event in (MSG_BALL_CAUGHT, MSG_GOAL_SCORED):
+            print(f"(ignoring {event!r} from team {team!r}: not our opponent {OPPONENT_TEAM!r})")
+        return None
+    return event if event in (MSG_BALL_CAUGHT, MSG_GOAL_SCORED) else None
+
+
 class SingleMotorLink:
     """Robot computer: listens on MOTOR_TOPIC for the Single Motor speed the
     second whistler's computer sends. Its own MQTT connection, so it works in
@@ -1030,12 +1063,13 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
             # --- MQTT results (the goalie learns the outcome here) ---
             while not inbox.empty():
                 message = inbox.get_nowait()
-                if role == "goalie" and message == MSG_BALL_CAUGHT:
+                event = read_result(message) if role == "goalie" else None
+                if event == MSG_BALL_CAUGHT:
                     robot.stop()
                     robot.flash("You caught the ball!")
                     print("We caught the ball! Victory!")
                     return VICTORY_SONG
-                if role == "goalie" and message == MSG_GOAL_SCORED:
+                if event == MSG_GOAL_SCORED:
                     robot.stop()
                     robot.flash("The ball scored...")
                     print("The ball scored. Defeat...")
@@ -1046,7 +1080,7 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
                 robot.stop()
                 robot.flash("Caught by the goalie!")
                 print("Caught by the goalie!")
-                publish(client, MSG_BALL_CAUGHT)
+                publish(client, result_message(MSG_BALL_CAUGHT))
                 return DEATH_SONG
 
             # --- Whistle -> command ---
@@ -1066,7 +1100,7 @@ def play(role, robot, client, inbox, pa, spectrogram=None, motor_link=None):
                 robot.stop()
                 robot.flash("GOOOAL!")
                 print("GOOOAL!")
-                publish(client, MSG_GOAL_SCORED)
+                publish(client, result_message(MSG_GOAL_SCORED))
                 return VICTORY_SONG
 
             if command != last_command and command is not None:
