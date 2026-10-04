@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['UnoQ-minifig-detector']
+
+roboflow:
+  workspace: julian-moody
+  project: unoq-minifig-detector
+  version: 2
+  license: Private
+  url: https://app.roboflow.com/julian-moody/unoq-minifig-detector/2
