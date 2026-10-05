@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 1
+names: ['Blue']
+
+roboflow:
+  workspace: raphael-lemus-s-workspace
+  project: blue-k60ro
+  version: 2
+  license: Private
+  url: https://app.roboflow.com/raphael-lemus-s-workspace/blue-k60ro/2
