@@ -1,5 +1,4 @@
 import json
-import math
 import time
 
 import paho.mqtt.client as mqtt
@@ -13,41 +12,28 @@ TOPIC = "ME193_Raphael_minifig"
 MATRIX_COLS = 13
 MATRIX_ROWS = 8
 
-# Positions from the computer: x -1 (left edge) .. 1 (right edge),
-# y -1 (top) .. 1 (bottom), (0, 0) = middle of the screen.
-CENTER_RADIUS = 0.12    # stop when the minifig is this close to the middle
-NEAR_RADIUS = 0.3       # ...or this close, once the car is level with the middle
-RESUME_RADIUS = 0.3     # after stopping, stay stopped until it is this far away
-MIN_SPEED = 75          # PWM 0-255; below this the DC motors may not turn
-MAX_SPEED = 130         # PWM 0-255; lower = slower
-FLIP_MARGIN = 0.1       # only reverse once the middle is clearly behind the car
+# Distance: the minifig's box height (fraction of the frame, 0-1) grows as it
+# gets closer to the laptop. Find TARGET_HEIGHT by trial and error: put the
+# car where it should stop and read "h=" from the console.
+TARGET_HEIGHT = 0.20
+HEIGHT_TOLERANCE = 0.03  # close enough to TARGET_HEIGHT to count as "there"
 
-# The car's heading on screen is learned from how the minifig moves while
-# driving, so the car can be placed facing any direction. Until it has
-# moved, it assumes driving forward moves the minifig this way on screen:
-INITIAL_HEADING = (0.0, 1.0)  # forward = toward the computer = down on screen
-LEARN_DISTANCE = 0.06   # how far the minifig must move to update the heading
-SETTLE_TICKS = 5        # loop ticks (0.05 s each) to wait after changing direction
-                        # before measuring, so coasting isn't mistaken for the heading
-FORGET_AFTER = 1.0      # seconds without the minifig before re-learning the heading
+# Side to side: x is -1 (left edge) .. 0 (middle) .. 1 (right edge).
+CENTER_TOLERANCE = 0.1   # |x| below this counts as centered
 
-# Steering: the outer wheel speeds up and the inner wheel slows down.
-STEER_GAIN = 50         # PWM difference at a full turn; 0 = no steering
-LEFT_MOTOR = 1          # which motor (1 or 2) is on the car's left side
-STEER_DIRECTION = 1     # set to -1 if it turns away from the middle
+# Driving. Forward = toward the laptop.
+DRIVE_SPEED = 85         # PWM 0-255; lower = slower
+STEER_GAIN = 35          # how much it turns toward the middle while driving
+STEER_DAMPING = 60       # eases off the turn once it's already heading to the middle
+BACKUP_TIME = 1.0        # seconds to back up before trying again
+STEER_DIRECTION = 1      # set to -1 if it turns away from the middle
+LEFT_MOTOR = 1           # which motor (1 or 2) is on the car's left side
 
-TIMEOUT = 0.5           # stop if no minifig message for this many seconds
+TIMEOUT = 0.5            # stop if no minifig message for this many seconds
 
 latest = {"data": None, "time": 0.0}
-nav = {
-    "heading": INITIAL_HEADING,  # screen direction the car moves when driving forward
-    "learned": False,
-    "sign": 0,                   # drive direction: 1 forward, -1 backward, 0 stopped
-    "ticks": 0,                  # loop ticks since the direction last changed
-    "anchor": None,              # position where the current measurement started
-    "arrived": False,            # stopped at the middle; ignore small jitter
-    "last_seen": 0.0,
-}
+nav = {"mode": "drive", "backup_until": 0.0}  # mode: drive, backup, arrived
+history = []  # recent (time, x) readings, used to predict where it's heading
 
 
 def on_connect(client, userdata, flags, reason_code, properties):
@@ -63,74 +49,57 @@ def on_message(client, userdata, msg):
         print(f"Ignoring non-JSON message: {msg.payload!r}")
 
 
-def set_sign(sign):
-    if sign != nav["sign"]:
-        nav["sign"], nav["ticks"], nav["anchor"] = sign, 0, None
+def x_speed(x, now):
+    """How fast the minifig is moving side to side (x units per second)."""
+    history.append((now, x))
+    while now - history[0][0] > 0.3:
+        history.pop(0)
+    t0, x0 = history[0]
+    return (x - x0) / (now - t0) if now > t0 else 0.0
 
 
-def learn_heading(x, y):
-    """Learn which way driving forward moves the minifig on screen."""
-    nav["ticks"] += 1
-    if nav["sign"] == 0 or nav["ticks"] < SETTLE_TICKS:
-        return
-    if nav["anchor"] is None:
-        nav["anchor"] = (x, y)
-        return
-    dx, dy = x - nav["anchor"][0], y - nav["anchor"][1]
-    dist = math.hypot(dx, dy)
-    if dist < LEARN_DISTANCE:
-        return
-    hx, hy = nav["sign"] * dx / dist, nav["sign"] * dy / dist
-    if nav["learned"]:
-        # Blend with the previous estimate to smooth out detection jitter.
-        hx, hy = hx + nav["heading"][0], hy + nav["heading"][1]
-        norm = math.hypot(hx, hy) or 1.0
-        hx, hy = hx / norm, hy / norm
-    nav["heading"] = (hx, hy)
-    nav["learned"] = True
-    nav["anchor"] = (x, y)
+def motors(speed, x, vx):
+    """Drive at `speed` (negative = backward) while steering by x.
 
-
-def control(x, y):
-    """Return (motor1, motor2) to bring the minifig to the middle."""
-    learn_heading(x, y)
-    ex, ey = -x, -y  # direction from the minifig to the middle
-    distance = math.hypot(ex, ey)
-    hx, hy = nav["heading"]
-    along = ex * hx + ey * hy  # how far ahead (+) or behind (-) the middle is
-
-    if nav["arrived"]:
-        if distance < RESUME_RADIUS:
-            return 0, 0
-        nav["arrived"] = False  # the minifig was moved away; drive again
-    # Stop at the middle, or when driving further can't get any closer to it.
-    level = nav["learned"] and abs(along) < CENTER_RADIUS and distance < NEAR_RADIUS
-    if distance < CENTER_RADIUS or level:
-        nav["arrived"] = True
-        set_sign(0)
-        return 0, 0
-
-    # Pick forward or backward. Until the heading is known, keep going one
-    # way so it can be measured; after that, only reverse when clearly past.
-    sign = nav["sign"]
-    if sign == 0 or (nav["learned"] and along * sign < -FLIP_MARGIN):
-        sign = 1 if along >= 0 else -1
-    set_sign(sign)
-    if nav["learned"]:
-        speed = sign * (MIN_SPEED + (MAX_SPEED - MIN_SPEED) * min(distance, 1.0))
-    else:
-        speed = sign * MIN_SPEED  # creep while working out which way it faces
-
-    # Steer only once the heading is known. `side` is how far the middle is
-    # to the right (+) or left (-) of the way the car is moving; turning that
-    # way works both driving forward and backward.
-    turn = 0.0
-    if nav["learned"]:
-        side = sign * (hx * ey - hy * ex) / distance
-        turn = STEER_DIRECTION * STEER_GAIN * side
-        turn = max(-0.6 * abs(speed), min(turn, 0.6 * abs(speed)))
+    Forward, it turns toward the middle, easing off once x is already
+    moving toward 0 so it doesn't over-turn. Backward, it goes straight to
+    make room; the next forward run comes in at a better angle, so each
+    back-up-and-forward cycle brings it closer to center.
+    """
+    x = max(-1.0, min(x, 1.0))
+    turn = STEER_GAIN * x + STEER_DAMPING * vx if speed > 0 else 0.0
+    turn = STEER_DIRECTION * max(-0.6 * abs(speed), min(turn, 0.6 * abs(speed)))
     left, right = int(speed + turn), int(speed - turn)
     return (left, right) if LEFT_MOTOR == 1 else (right, left)
+
+
+def control(x, h, now):
+    """Return (motor1, motor2) for the minifig at x with box height h."""
+    far = h < TARGET_HEIGHT - HEIGHT_TOLERANCE
+    close = h > TARGET_HEIGHT + HEIGHT_TOLERANCE
+    centered = abs(x) < CENTER_TOLERANCE
+    vx = x_speed(x, now)
+
+    if nav["mode"] == "arrived":
+        # Stay put unless the minifig is clearly moved away.
+        if abs(x) < 2 * CENTER_TOLERANCE and abs(h - TARGET_HEIGHT) < 2 * HEIGHT_TOLERANCE:
+            return 0, 0
+        nav["mode"] = "drive"
+
+    if nav["mode"] == "backup":
+        if now < nav["backup_until"]:
+            return motors(-DRIVE_SPEED, x, vx)
+        nav["mode"] = "drive"
+
+    if not far and not close and centered:
+        nav["mode"] = "arrived"
+        return 0, 0
+    if close or (not far and not centered):
+        # Too close, or at the right distance but off to the side: back up
+        # to make room, then come in again at an angle.
+        nav["mode"], nav["backup_until"] = "backup", now + BACKUP_TIME
+        return motors(-DRIVE_SPEED, x, vx)
+    return motors(DRIVE_SPEED, x, vx)  # far: drive toward the laptop
 
 
 def to_matrix(x, y):
@@ -159,22 +128,16 @@ def loop():
     if not found:
         Bridge.call("set_motors", 0, 0)
         Bridge.call("show_dot", -1, -1)  # clear the display
-        set_sign(0)
-        if now - nav["last_seen"] > FORGET_AFTER:
-            # The car may have been picked up and turned; learn the heading again.
-            nav["heading"], nav["learned"] = INITIAL_HEADING, False
-            nav["arrived"] = False
+        history.clear()
+        if nav["mode"] != "arrived":
+            nav["mode"] = "drive"
     else:
-        nav["last_seen"] = now
-        x, y = data["x"], data["y"]
-        m1, m2 = control(x, y)
+        x, y, h = data["x"], data["y"], data["height"]
+        m1, m2 = control(x, h, now)
         col, row = to_matrix(x, y)
         Bridge.call("show_dot", col, row)
         Bridge.call("set_motors", m1, m2)
-        hx, hy = nav["heading"]
-        state = "arrived" if nav["arrived"] else ("learned" if nav["learned"] else "learning")
-        print(f"x={x:.2f} y={y:.2f} heading=({hx:.2f}, {hy:.2f}) {state} "
-              f"-> motors {m1}, {m2}")
+        print(f"x={x:.2f} h={h:.3f} {nav['mode']} -> motors {m1}, {m2}")
     time.sleep(0.05)
 
 
