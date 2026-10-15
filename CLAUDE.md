@@ -1,8 +1,10 @@
 # Arduino UNO Q Apps
 
 This folder holds Arduino App Lab apps for an Arduino UNO Q board. It mirrors
-`/home/arduino/ArduinoApps` on the board. Each subfolder with an `app.yaml` is
-a separate app:
+`/home/arduino/ArduinoApps` on the board. Each folder with an `app.yaml` is
+a separate app. Apps can be at the top level or inside a project folder (e.g.
+`PingPong/PingPong-UnoQ`); deploy.py finds them either way and puts them on the
+board as `/home/arduino/ArduinoApps/<app folder name>`:
 
 - `python/main.py` runs in a container on the board's Linux side.
 - `sketch/` is the microcontroller (STM32) code.

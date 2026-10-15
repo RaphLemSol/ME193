@@ -129,6 +129,26 @@ def push(board, items, remote_dir):
         run(["scp", *SSH_OPTS, "-r", "-q", *items, f"{target}:{remote_dir}/"])
 
 
+def find_app_dir(target):
+    """The App folder (one with app.yaml) for a path relative to ROOT.
+
+    Apps can sit at the top level (boston-weather-marquee) or inside a project
+    folder (PingPong/PingPong-UnoQ). A bare app name like "PingPong-UnoQ" is
+    also looked up anywhere under ROOT.
+    """
+    parts = target.parts
+    for i in range(1, len(parts) + 1):      # shallowest folder on the path with an app.yaml
+        candidate = ROOT.joinpath(*parts[:i])
+        if (candidate / "app.yaml").exists():
+            return candidate
+    if len(parts) == 1:
+        for app_yaml in sorted(ROOT.rglob("app.yaml")):
+            rel = app_yaml.relative_to(ROOT).parts
+            if app_yaml.parent.name == parts[0] and not any(p.startswith(".") for p in rel):
+                return app_yaml.parent
+    return None
+
+
 def main():
     # python deploy.py --cmd "some command"  -> run it on the board
     if len(sys.argv) >= 2 and sys.argv[1] == "--cmd":
@@ -174,11 +194,11 @@ def main():
             target = target.resolve().relative_to(ROOT)
         except ValueError:
             sys.exit(f"'{target}' isn't inside {ROOT}. Open a file inside an app folder.")
-    app = target.parts[0]                   # first folder = app name
-    app_dir = ROOT / app
-    if not (app_dir / "app.yaml").exists():
-        sys.exit(f"'{app}' doesn't look like an App (no app.yaml). "
+    app_dir = find_app_dir(target)
+    if app_dir is None:
+        sys.exit(f"'{target}' isn't inside an App (no app.yaml). "
                  "Open a file inside an app folder.")
+    app = app_dir.name
 
     board = find_board()
     remote_app = f"{REMOTE_DIR}/{app}"
