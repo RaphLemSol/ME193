@@ -1,0 +1,5 @@
+name: Ping-Pong Paddle
+description: "MPU6050 + light-sensor paddle for virtual ping-pong; buzzes the motors on hits"
+ports: []
+bricks: []
+icon: 🏓

@@ -1,0 +1,5 @@
+name: Boston Weather Marquee
+description: "Scrolls the Boston temperature and the board's IP on the LED matrix"
+ports: []
+bricks: []
+icon: 🌡️
