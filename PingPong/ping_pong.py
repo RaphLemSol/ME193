@@ -98,6 +98,9 @@ SPEEDUP_PER_HIT = 0.03     # each hit in a streak takes this fraction off the tr
 HIT_ZONE = (0.80, 1.05)    # ball depth (0 = far end, 1 = at you) where you can hit it
 PADDLE_HALF_WIDTH = 0.12   # wrist within this many screen widths of the ball = in position
 SWING_WINDOW_S = 0.45      # a swing this recent still counts (covers MQTT delay)
+LATE_GRACE_S = 0.35        # swings arriving this long after the ball leaves the zone still count (MQTT delay)
+MEMORY_S = 0.5             # wrist position / grip from this long before the swing still count
+                           # (the swing itself moves your wrist off the ball)
 MAX_MISSES = 3             # misses before game over
 REQUIRE_GRIP = True        # light sensor must be covered to hit (ignored with --keyboard)
 
@@ -138,6 +141,7 @@ class Paddle:
         self.light_baseline = None
         self.last_swing_time = 0.0
         self.last_swing_strength = 0.0
+        self.swing_count = 0       # total swings, so the game can tell when a new one arrives
 
     def on_message(self, payload):
         try:
@@ -165,10 +169,10 @@ class Paddle:
 
     def _swing(self, now, gyro):
         self.last_swing_time = now
+        self.swing_count += 1
         # 0 = just over the swing threshold, 1 = a hard swing
         self.last_swing_strength = clamp(
             (gyro - SWING_GYRO_DPS) / (HARD_SWING_GYRO_DPS - SWING_GYRO_DPS), 0.0, 1.0)
-        print(f"Swing! {gyro:.0f} deg/s")
 
     @property
     def connected(self):
@@ -341,6 +345,9 @@ class Game:
         self.message_until = 0.0
         self.gameover_until = 0.0
         self.ball = None
+        self.seen_swings = 0
+        self.wrist_history = []      # recent (time, wrist x)
+        self.last_grip_time = 0.0
 
     def flash(self, text, seconds=1.0):
         self.message, self.message_until = text, time.time() + seconds
@@ -372,38 +379,83 @@ class Game:
             "z": 0.0,                         # 0 = far end, 1 = at the player
             "travel_s": self.travel_time(swing_strength),
             "wait_until": time.time() + delay,
+            "exit_time": None,                # when the ball left the hit zone
+            # what happened during this ball's hit window, to explain a miss
+            "swing_seen": False, "early_swing": False,
+            "wrist_seen": False, "aligned_seen": False, "grip_seen": False,
         }
 
     def ball_x(self):
         b = self.ball
         return b["start_x"] + (b["target_x"] - b["start_x"]) * clamp(b["z"], 0.0, 1.0)
 
+    def aligned_recently(self, now):
+        """Was the wrist under the ball at any point in the last MEMORY_S?"""
+        return any(now - t <= MEMORY_S and abs(x - self.ball_x()) <= PADDLE_HALF_WIDTH
+                   for t, x in self.wrist_history)
+
     def update(self, dt, wrist, paddle):
         now = time.time()
         if self.state == "gameover" and now >= self.gameover_until:
             self.state = "menu"
+
+        # Remember the last moments of wrist position and grip: by the time a
+        # swing arrives, the swing itself has moved your wrist off the ball.
+        if wrist is not None:
+            self.wrist_history.append((now, wrist[0]))
+        self.wrist_history = [(t, x) for t, x in self.wrist_history if now - t <= MEMORY_S]
+        if paddle.gripped:
+            self.last_grip_time = now
+        new_swing = paddle.swing_count != self.seen_swings
+        self.seen_swings = paddle.swing_count
+
         if self.state != "playing" or now < self.ball["wait_until"]:
+            if new_swing:
+                print("Swing! (no ball in play)")
             return
 
-        self.ball["z"] += dt / self.ball["travel_s"]
-        z = self.ball["z"]
+        ball = self.ball
+        ball["z"] += dt / ball["travel_s"]
+        z = ball["z"]
+        if z > HIT_ZONE[1] and ball["exit_time"] is None:
+            ball["exit_time"] = now
+        if new_swing:
+            if z < HIT_ZONE[0]:
+                print(f"Swing! ball {z:.0%} of the way to you (hit zone starts at "
+                      f"{HIT_ZONE[0]:.0%}) - too early")
+                ball["early_swing"] = True
+            else:
+                print(f"Swing! ball {z:.0%} of the way to you - in the hit window")
 
-        if HIT_ZONE[0] <= z <= HIT_ZONE[1]:
-            in_position = wrist is not None and abs(wrist[0] - self.ball_x()) <= PADDLE_HALF_WIDTH
+        # The hit window: the hit zone, plus a little after it for MQTT delay
+        in_window = z >= HIT_ZONE[0] and (
+            ball["exit_time"] is None or now - ball["exit_time"] <= LATE_GRACE_S)
+        if in_window:
             strength = paddle.recent_swing()
-            if in_position and strength is not None and paddle.gripped:
+            aligned = self.aligned_recently(now)
+            gripped = now - self.last_grip_time <= MEMORY_S
+            ball["wrist_seen"] |= bool(self.wrist_history)
+            ball["aligned_seen"] |= aligned
+            ball["grip_seen"] |= gripped
+            ball["swing_seen"] |= strength is not None
+            if strength is not None and aligned and gripped:
                 paddle.use_swing()
                 self.hit(strength)
-        elif z > HIT_ZONE[1]:
-            if wrist is None:
-                why = "can't see your wrist"
-            elif abs(wrist[0] - self.ball_x()) > PADDLE_HALF_WIDTH:
-                why = "paddle not under the ball"
-            elif not paddle.gripped:
-                why = "hold the paddle (cover the light sensor)"
-            else:
-                why = "no swing"
-            self.miss(why)
+        elif ball["exit_time"] is not None:
+            self.miss(self.miss_reason(ball))
+
+    def miss_reason(self, ball):
+        """Everything that was missing during the hit window."""
+        reasons = []
+        if not ball["swing_seen"]:
+            reasons.append("swing came too early" if ball["early_swing"] else "no swing")
+        if not ball["wrist_seen"]:
+            reasons.append("can't see your wrist")
+        elif not ball["aligned_seen"]:
+            reasons.append("paddle not under the ball")
+        if not ball["grip_seen"]:
+            reasons.append("hold the paddle (cover the light sensor)")
+        return ", ".join(reasons) or "swing, position and grip weren't all true at once"
 
     def hit(self, strength):
         self.streak += 1

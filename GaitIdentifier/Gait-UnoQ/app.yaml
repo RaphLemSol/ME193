@@ -1,0 +1,5 @@
+name: Gait Identifier
+description: "MPU6050 wearable: streams the IMU at 100 Hz over MQTT and shows the predicted activity"
+ports: []
+bricks: []
+icon: 🚶

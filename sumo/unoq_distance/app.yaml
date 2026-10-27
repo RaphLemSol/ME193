@@ -1,0 +1,5 @@
+name: Sumo Distance
+description: "HC-SR04 ultrasonic distance, published over MQTT for the ME193 sumo robot"
+icon: 📏
+ports: []
+bricks: []
