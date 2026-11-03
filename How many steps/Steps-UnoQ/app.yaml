@@ -1,0 +1,5 @@
+name: How Many Steps
+description: "MPU6050 wearable: streams the IMU at 100 Hz over MQTT and shows the step count from the laptop's neural net"
+ports: []
+bricks: []
+icon: 👣

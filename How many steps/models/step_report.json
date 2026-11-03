@@ -1,0 +1,51 @@
+{
+  "stride": {
+    "recall": 0.996078431372549,
+    "precision": 0.9694656488549618,
+    "timing_ms": -0.5905511811023622,
+    "timing_sd_ms": 16.790911644977104
+  },
+  "count": {
+    "n": 1,
+    "bias": -11.0,
+    "mae": 11.0,
+    "sd": NaN,
+    "rel_bias": -0.18032786885245902,
+    "mape": 0.18032786885245902,
+    "rel_sd": NaN
+  },
+  "count_baseline": {
+    "n": 1,
+    "bias": -11.0,
+    "mae": 11.0,
+    "sd": NaN,
+    "rel_bias": -0.18032786885245902,
+    "mape": 0.18032786885245902,
+    "rel_sd": NaN
+  },
+  "count_source": "counted",
+  "idle": {
+    "bike": {
+      "net_per_min": 0.0,
+      "baseline_per_min": 85.94986258016156
+    },
+    "still": {
+      "net_per_min": 0.0,
+      "baseline_per_min": 0.0
+    }
+  },
+  "distance": {
+    "model": {
+      "kind": "constant",
+      "a": 0.8234552332912989,
+      "b": 0.0,
+      "tested_mape": 0.04727047146401972,
+      "tested_rel_sd": 0.06685054184418707,
+      "recordings": 2
+    },
+    "tests": {
+      "constant": 0.04727047146401972,
+      "height rule (no fit)": 0.7737259615384616
+    }
+  }
+}
