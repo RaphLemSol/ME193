@@ -1,0 +1,8 @@
+intruders/
+movie/
+models/*.npz
+
+# 380 MB of training photos: too big for the repo
+data/
+# The code's hash: only 60 possible codes, so it could be cracked instantly
+Safe-UnoQ/python/code.json

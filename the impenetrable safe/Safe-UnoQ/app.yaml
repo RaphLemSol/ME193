@@ -1,0 +1,5 @@
+name: Impenetrable Safe
+description: "Finger-code safe: a CNN counts the fingers under a USB webcam; three right digits open the latch"
+ports: []
+bricks: []
+icon: 🔒

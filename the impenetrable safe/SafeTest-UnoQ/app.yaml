@@ -1,0 +1,5 @@
+name: Safe Test
+description: "Tests for the impenetrable safe: the button (matrix + RGB LED + log) and the USB webcam on the UNO Q"
+ports: []
+bricks: []
+icon: 🧪
