@@ -1,0 +1,3 @@
+walk,walker,kind,t_ms,steps,distance_m,steps_since_turn,distance_since_turn,turns,turns_left,turns_right,heading_deg,on_stairs,label,predicted
+3,Mohammed,demo,1795030910075,0,0,0,0,1,1,0,70,0,Left,
+3,Mohammed,demo,1795030925574,0,0,0,0,2,1,1,-17,0,Straight,

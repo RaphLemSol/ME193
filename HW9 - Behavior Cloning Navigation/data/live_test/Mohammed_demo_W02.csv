@@ -1,0 +1,11 @@
+walk,walker,kind,t_ms,steps,distance_m,steps_since_turn,distance_since_turn,turns,turns_left,turns_right,heading_deg,on_stairs,label,predicted
+2,Mohammed,demo,1795030243410,2,0.8,2,0.8,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030244731,4,1.7,4,1.7,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030246022,6,2.5,6,2.5,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030248376,8,3.3,8,3.3,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030249420,8,3.3,8,3.3,0,0,0,0,0,Left,
+2,Mohammed,demo,1795030252150,8,3.3,8,3.3,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030254725,10,4.1,10,4.1,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030255954,12,4.9,12,4.9,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030264280,14,5.8,14,5.8,0,0,0,0,0,Straight,
+2,Mohammed,demo,1795030274518,16,6.6,16,6.6,0,0,0,0,0,Straight,

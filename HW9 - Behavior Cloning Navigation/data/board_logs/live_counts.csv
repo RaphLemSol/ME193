@@ -1,0 +1,12 @@
+file,live_steps,live_steps_unc,live_distance_m,live_distance_unc
+Mohammed_Test_T01.csv,1.7,7.0,0.91,4.33
+Raph_Test_T01.csv,26.4,2.9,14.59,1.94
+Raph_Test_T02.csv,26.8,3.8,14.66,2.51
+Raph_Test_T03.csv,2.8,3.5,1.51,2.16
+Mohammed_Test_T02.csv,18.5,3.7,9.65,2.4
+Mohammed_Test_T03.csv,21.7,3.7,11.56,2.39
+Mohammed_Test_T04.csv,4.6,4.0,2.59,2.51
+Mohammed_Test_T05.csv,0.2,1.7,0.11,1.07
+Mohammed_Test_T06.csv,32.1,3.0,18.04,2.03
+Mohammed_Test_T07.csv,22.0,3.7,11.41,2.41
+Raph_Test_T04.csv,0.2,1.6,0.13,1.03

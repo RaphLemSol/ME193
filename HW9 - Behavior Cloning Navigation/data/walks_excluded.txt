@@ -1,0 +1,12 @@
+# Walk files on the board that are NOT route walks: never pulled into walks/, never trained on.
+# One file name per line; text after # is a comment.
+# (moved) Mohammed_demo_W01.csv  # 2026-11-18 Live test: started, no rows (copy in live_test/)
+# (moved) Mohammed_demo_W02.csv  # 2026-11-18 Live test: board swung by hand (copy in live_test/)
+# (moved) Mohammed_demo_W03.csv  # 2026-11-18 turn test: board rotated on the table (copy in live_test/)
+#
+# 2026-11-19: all test walks (W01-W03 above and Raph_dagger_W04, the walk-test start
+# that recorded 0 rows) were MOVED on the board to python/walks/tests/, not deleted.
+# Files there are never pulled or numbered, so the lines above are comments now: a real
+# route walk can reuse those names (numbering starts again at W01 after an app restart).
+Mohammed_demo_W02.csv  # 2026-11-19 route demo: the 3rd left (about step 54) was not counted, turns stayed 2, so its end (Stairs, Arrived) would be learned under 2 turns. Kept on the board, not trained on.
+Mohammed_dagger_W11.csv  # 2026-11-19 the final filmed test: kept as a record, not trained on

@@ -1,0 +1,12 @@
+file,person,activity,steps,distance_m,duration_s
+Mohammed_Test_T01.csv,Mohammed,Test,0,0.0,46.26
+Raph_Test_T01.csv,Raph,Test,28,0.0,33.94
+Raph_Test_T02.csv,Raph,Test,27,0.0,41.82
+Raph_Test_T03.csv,Raph,Test,0,0.0,23.98
+Mohammed_Test_T02.csv,Mohammed,Test,28,0.0,36.28
+Mohammed_Test_T03.csv,Mohammed,Test,28,0.0,37.91
+Mohammed_Test_T04.csv,Mohammed,Test,0,0.0,30.08
+Mohammed_Test_T05.csv,Mohammed,Test,0,0.0,11.23
+Mohammed_Test_T06.csv,Mohammed,Test,28,0.0,36.75
+Mohammed_Test_T07.csv,Mohammed,Test,28,0.0,37.43
+Raph_Test_T04.csv,Raph,Test,0,0.0,11.14

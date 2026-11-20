@@ -1,0 +1,34 @@
+walk,walker,kind,t_ms,steps,distance_m,steps_since_turn,distance_since_turn,turns,turns_left,turns_right,heading_deg,on_stairs,label,predicted,raw_label,note
+1,Mohammed,demo,1795126450435,2,0.8,2,0.8,0,0,0,-4,0,Straight,,Straight,
+1,Mohammed,demo,1795126452184,4,1.7,4,1.7,0,0,0,-14,0,Straight,,Straight,
+1,Mohammed,demo,1795126453958,6,2.5,6,2.5,0,0,0,-25,0,Straight,,Straight,
+1,Mohammed,demo,1795126456362,8,3.3,8,3.3,0,0,0,-26,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126457198,10,4.1,10,4.1,0,0,0,-35,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126459236,12,4.9,12,4.9,0,0,0,-33,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126460746,14,5.8,14,5.8,0,0,0,-37,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126462508,16,6.6,16,6.6,0,0,0,-45,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126464275,18,7.4,18,7.4,0,0,0,-57,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126466296,20,8.2,20,8.2,0,0,0,-54,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126468068,22,9.1,22,9.1,0,0,0,-64,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126469570,24,9.9,24,9.9,0,0,0,-73,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126471584,26,10.7,26,10.7,0,0,0,-80,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126474005,28,11.5,28,11.5,0,0,0,-83,0,Left,,Stairs,turn warning wins over the Stairs tap
+1,Mohammed,demo,1795126476059,30,12.4,30,12.4,0,0,0,-90,0,Left,,Stairs,turn warning wins over the Stairs tap
+1,Mohammed,demo,1795126482071,32,13.2,32,13.2,0,0,0,-96,0,Left,,Straight,turn label 6 steps ahead of the counted turn
+1,Mohammed,demo,1795126484591,34,14,34,14,0,0,0,-100,0,Left,,Left,
+1,Mohammed,demo,1795126486968,36,14.8,2,0.8,1,1,0,-33,0,Left,,Straight,turn label 6 steps ahead of the counted turn
+1,Mohammed,demo,1795126489114,38,15.7,4,1.7,1,1,0,3,0,Left,,Left,
+1,Mohammed,demo,1795126492038,40,16.5,2,0.8,2,2,0,41,0,Straight,,Straight,
+1,Mohammed,demo,1795126493672,42,17.3,4,1.6,2,2,0,29,0,Straight,,Straight,
+1,Mohammed,demo,1795126495120,44,18.1,6,2.5,2,2,0,21,0,Straight,,Straight,
+1,Mohammed,demo,1795126496433,46,18.9,8,3.3,2,2,0,15,0,Straight,,Straight,
+1,Mohammed,demo,1795126497796,48,19.8,10,4.1,2,2,0,2,0,Left,,Straight,turn label 6 steps ahead of the counted turn
+1,Mohammed,demo,1795126499114,50,20.6,12,4.9,2,2,0,-4,0,Left,,Straight,turn label 6 steps ahead of the counted turn
+1,Mohammed,demo,1795126501850,52,21.4,14,5.8,2,2,0,31,0,Left,,Left,
+1,Mohammed,demo,1795126502078,54,22.2,16,6.6,2,2,0,36,0,Left,,Left,
+1,Mohammed,demo,1795126505630,56,23.1,2,0.8,3,3,0,52,0,Stairs,,Stairs,
+1,Mohammed,demo,1795126510130,58,23.9,4,1.6,3,3,0,55,0,Straight,,Straight,
+1,Mohammed,demo,1795126510899,60,24.7,6,2.5,3,3,0,54,0,Straight,,Straight,
+1,Mohammed,demo,1795126512914,62,25.5,8,3.3,3,3,0,39,0,Straight,,Straight,
+1,Mohammed,demo,1795126514556,64,26.4,10,4.1,3,3,0,37,0,Straight,,Straight,
+1,Mohammed,demo,1795126516215,66,27.2,12,4.9,3,3,0,31,0,Arrived,,Arrived,

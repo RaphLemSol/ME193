@@ -1,0 +1,1 @@
+numpy==2.5.1          # the step counter (stride_counter.py); the same version HW7's app uses on the board

@@ -1,0 +1,5 @@
+walk,walker,kind,t_ms,steps,distance_m,steps_since_turn,distance_since_turn,turns,turns_left,turns_right,heading_deg,on_stairs,label,predicted
+6,Mohammed,dagger,1795128932623,26,10.7,26,10.7,0,0,0,-110,0,Stairs,Left
+6,Mohammed,dagger,1795128937628,32,13.2,32,13.2,0,0,0,-111,0,Left,Left
+6,Mohammed,dagger,1795128940741,34,14,0,0,1,1,0,-46,0,Left,Left
+6,Mohammed,dagger,1795128966045,66,27.2,14,5.8,3,3,0,-53,0,Arrived,Straight

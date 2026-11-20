@@ -1,0 +1,97 @@
+{
+ "bucket": 4,
+ "info": {
+  "trained": "2026-11-19 18:14",
+  "walks": [
+   "Mohammed_dagger_W05.csv",
+   "Mohammed_dagger_W06.csv",
+   "Mohammed_demo_W01.csv",
+   "Raph_dagger_W07.csv",
+   "Raph_dagger_W08.csv",
+   "Raph_demo_W03.csv",
+   "Raph_demo_W04.csv"
+  ],
+  "bucket": 4,
+  "rows": 127,
+  "dagger_weight": 3
+ },
+ "table": {
+  "0,0,0,0": {
+   "Straight": 5
+  },
+  "0,0,0,1": {
+   "Straight": 4,
+   "Stairs": 2
+  },
+  "0,0,0,2": {
+   "Stairs": 6
+  },
+  "0,0,0,3": {
+   "Stairs": 6
+  },
+  "0,0,0,4": {
+   "Stairs": 6
+  },
+  "0,0,0,5": {
+   "Stairs": 6
+  },
+  "0,0,0,6": {
+   "Stairs": 21,
+   "Left": 3
+  },
+  "0,0,0,7": {
+   "Stairs": 12,
+   "Left": 9
+  },
+  "0,0,0,8": {
+   "Straight": 6,
+   "Left": 9
+  },
+  "0,0,0,9": {
+   "Left": 3
+  },
+  "1,0,0,0": {
+   "Left": 9
+  },
+  "1,0,0,1": {
+   "Left": 7
+  },
+  "2,0,0,0": {
+   "Straight": 3
+  },
+  "2,0,0,1": {
+   "Straight": 6
+  },
+  "2,0,0,2": {
+   "Straight": 4,
+   "Left": 2
+  },
+  "2,0,0,3": {
+   "Left": 5,
+   "Straight": 4
+  },
+  "2,0,0,4": {
+   "Left": 7
+  },
+  "2,0,0,5": {
+   "Left": 1
+  },
+  "3,0,0,0": {
+   "Stairs": 3
+  },
+  "3,0,0,1": {
+   "Straight": 4,
+   "Stairs": 2
+  },
+  "3,0,0,2": {
+   "Straight": 6
+  },
+  "3,0,0,3": {
+   "Arrived": 5,
+   "Straight": 3
+  },
+  "3,0,0,4": {
+   "Arrived": 2
+  }
+ }
+}

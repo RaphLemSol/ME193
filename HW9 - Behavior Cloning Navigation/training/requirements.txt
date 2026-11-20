@@ -1,0 +1,4 @@
+numpy==2.5.3          # label cleanup and the policy table
+matplotlib==3.11.2    # plots of walks and labels
+torch==2.14.1         # only for export_raph_cnn.py, check_numpy_port.py, compare_raph_cnn.py
+scipy==1.18.1         # only for check_numpy_port.py (scipy's find_peaks vs the port's)

@@ -1,0 +1,16 @@
+# app.yaml: the main configuration file for this Arduino App (read by App Lab
+# when the app is deployed to the UNO Q).
+
+# The user-visible name of the application.
+name: Nolop Navigator
+
+# The icon for the application, can be an emoji or a short string.
+icon: 🧭
+
+# Network ports the app opens. The phone page is served on 7000, as in HW7.
+ports: [7000]
+
+# Bricks (ready-made App Lab parts) the app uses. web_ui serves assets/ as the
+# phone page and lets python/ answer API requests such as GET /api/state.
+bricks:
+  - arduino:web_ui

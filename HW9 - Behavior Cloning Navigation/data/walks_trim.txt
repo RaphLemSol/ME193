@@ -1,0 +1,5 @@
+# Walks used only in part (training/clean_labels.py, trims()): file, which rows to keep by step
+# count ("<40" = steps below 40, "<=36" = up to 36), then why. Labels are worked out on the
+# whole walk first, then the later rows are dropped. Raw files are never changed.
+Mohammed_dagger_W05.csv  <40   # 2026-11-19 DAgger: only the rows before step 40 are used (reason: see docs/process_log.md)
+Raph_dagger_W07.csv      <=36  # 2026-11-19 DAgger: the two lefts after the stairs were counted as ONE turn (turns 0 at step 36, then 1); rows after that are on the wrong stretch

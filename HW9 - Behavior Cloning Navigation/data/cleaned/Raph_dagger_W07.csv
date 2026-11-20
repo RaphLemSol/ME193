@@ -1,0 +1,8 @@
+walk,walker,kind,t_ms,steps,distance_m,steps_since_turn,distance_since_turn,turns,turns_left,turns_right,heading_deg,on_stairs,label,predicted,raw_label,note
+7,Raph,dagger,1795129299370,24,9.9,24,9.9,0,0,0,-68,0,Stairs,Left,Stairs,correction
+7,Raph,dagger,1795129301211,26,10.7,26,10.7,0,0,0,-64,0,Stairs,Left,Stairs,correction
+7,Raph,dagger,1795129303956,26,10.7,26,10.7,0,0,0,-56,0,Stairs,Left,Stairs,correction
+7,Raph,dagger,1795129305725,28,11.5,28,11.5,0,0,0,-63,0,Stairs,Left,Stairs,correction
+7,Raph,dagger,1795129307990,30,12.4,30,12.4,0,0,0,-72,0,Stairs,Left,Stairs,correction
+7,Raph,dagger,1795129316261,34,14,34,14,0,0,0,7,0,Straight,Left,Straight,correction
+7,Raph,dagger,1795129320613,36,14.8,36,14.8,0,0,0,16,0,Left,Left,Left,correction
